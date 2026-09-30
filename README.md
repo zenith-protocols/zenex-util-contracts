@@ -24,11 +24,11 @@ differ from v4's.
 
 ### Referral
 
-`attribute(caller: Address, referrer: Address) -> (Address, Address)` requires `caller`'s
-authorization and fails with `ReferralError::SelfReferral` (1) when `caller == referrer`. It emits
-`Attributed { referee, referrer }` with topics `("attributed", referee, referrer)`, so indexers can
-filter on either side, and returns `(caller, referrer)` for simulation pre-flight. The event log is
-the record: the contract has no storage, no admin and no constructor.
+`attribute(caller: Address, referrer: Address)` requires `caller`'s authorization and fails with
+`ReferralError::SelfReferral` (7001) when `caller == referrer`. It emits `Attributed { referee,
+referrer }` with topics `("attributed", referee, referrer)`, so indexers can filter on either side,
+and returns nothing: a successful simulation is the pre-flight. The event log is the record: the
+contract has no storage, no admin and no constructor.
 
 ### Fee forwarder
 
@@ -172,6 +172,25 @@ CI (`.github/workflows/ci.yml`) runs `cargo fmt --all -- --check` and `cargo tes
 --workspace` on every push and pull request. The tests need no built WASM: the router suite loads the
 committed `market-router/testdata/market.wasm`.
 
+## Error codes
+
+A contract error surfaces as `Error(Contract, #code)` whichever contract in the call tree raised it,
+so each contract here takes codes no neighbour uses. The codes that can meet in a Zenex call tree:
+
+| Codes | Raised by |
+|---|---|
+| 1–15 | the host's built-in contracts, such as the Stellar Asset Contract |
+| 1, 600–900 | zenex-contracts (governance, factory, market, oracle, strategy vault, treasury) |
+| 100–411, 1000–1502, 2000–2203 | OpenZeppelin `stellar-tokens`, `stellar-contract-utils` and `stellar-access`, in zenex-contracts |
+| 3000–3227 | OpenZeppelin `stellar-accounts`: the smart account, its verifiers and policies |
+| 4001–4006 | `session-policy` |
+| 5000–5006 | OpenZeppelin `stellar-fee-abstraction` |
+| 6001–6002 | `fee-forwarder` |
+| 7001 | `referral` |
+
+`market-router` defines none: a failing call traps with its own error. OpenZeppelin's governance
+(4000–4104) and zk-email (6000–6001) modules reuse two of these ranges; nothing here links them.
+
 ## Releases
 
 Pushing a version tag (`v1.2.3`) runs `.github/workflows/release.yml`: one job per contract on
@@ -227,6 +246,6 @@ v1 and referral testnet contracts were built from the legacy local sources
 (`soroban-smart-account/session-policy` @ 9cded45 and `soroban-referral`), which reproduce the
 deployed wasm byte-for-byte with rustc 1.93.1, stellar CLI 25.2.0 and their original lockfiles.
 This workspace builds with soroban-sdk 27 and one shared lockfile, so its output does not match
-those hashes. The referral functions and their argument types are unchanged; session-policy v4
-replaces v1's interface with a constructor configuration, an empty install parameter and new error
-codes.
+those hashes. `attribute` keeps its arguments, but v1 returns `(caller, referrer)` and fails
+with 1; session-policy v4 replaces v1's interface with a constructor configuration, an empty install
+parameter and new error codes.
