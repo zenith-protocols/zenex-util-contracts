@@ -6,40 +6,40 @@
 //! expires. The account calls `enforce` once for every auth context the key
 //! signs.
 //!
-//! The markets, the collateral token, the router and the fee budget are fixed
-//! at deploy. There is no admin and nothing to configure per wallet, so a rule
-//! installs the policy with an empty parameter. The policy lets through only:
+//! The fee forwarder, the router, the markets, the collateral token and the
+//! fee recipient are fixed at deploy. There is no admin and no storage: a
+//! rule installs the policy with an empty parameter. The policy lets through
+//! only:
 //!
+//! - `forward` / `forward_unsafe` on the forwarder, when the signed
+//!   projection pays `fee_token = token` to `fee_recipient` and targets the
+//!   router's `multicall`, `create_and_fill` or `create_and_try_fill`;
 //! - `create_order`, `cancel_order` and `claim_credit` on the markets;
-//! - the router's relay-fee envelopes (`*_with_fee`);
 //! - `transfer` of the token into a market, which is the order escrow;
-//! - `approve` of the token to the router, within the session's fee budget.
+//! - `approve` of the token to the forwarder, the fee allowance.
 //!
 //! Everything else fails closed: other contracts (the wallet itself, the
-//! vault, other tokens), other functions, and every non-contract context.
+//! router, the vault, other tokens), other functions, and every non-contract
+//! context.
 //!
 //! ## What a stolen key can do
 //!
 //! It can trade on the markets. Losses and fees mostly go to the vault, plus
-//! the execution fee (0.01 USDC on mainnet) of each order it fills itself. It
-//! can also pay up to `fee_budget` in relay fees to anyone. It cannot
-//! withdraw, move other tokens, or touch the wallet, the vault or any other
-//! contract.
+//! the execution fee of each order it fills itself. It can pay relay fees,
+//! but only to `fee_recipient`. It cannot withdraw, move other tokens,
+//! approve anyone but the forwarder, or call the wallet, the router, the
+//! vault or any other contract.
 //!
-//! ## Why the fee is budgeted, not pinned
+//! ## Why a forwarder allowance needs no cap
 //!
-//! The router moves the relay fee by `transfer_from`, as the spender, to a
-//! recipient the submitter picks after the wallet has signed. That transfer
-//! needs no signature from the wallet, so it never reaches this policy. The
-//! wallet signs only the router's allowance, and that allowance counts
-//! against `fee_budget` at its full amount.
-//!
-//! The budget belongs to the context rule. A session that spends it renews
-//! with a new rule, which starts again at zero.
+//! The forwarder refuses `transfer_from` and `burn_from` targets, so only its
+//! own fee step can spend an allowance it holds. That step pulls from the
+//! wallet only under the wallet's root authorization, and pays the
+//! `fee_recipient` in the signed projection, which this policy pins.
 use soroban_sdk::{
     auth::{Context, ContractContext},
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Symbol, TryFromVal, Vec,
+    Env, Symbol, TryFromVal, Val, Vec,
 };
 use stellar_accounts::{
     policies::Policy,
@@ -53,21 +53,21 @@ use stellar_accounts::{
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
+    /// The fee forwarder the key's relayed trades go through.
+    pub forwarder: Address,
+    /// The router the forwarder may target.
+    pub router: Address,
     /// The markets the key may trade on.
     pub markets: Vec<Address>,
-    /// The collateral token.
+    /// The collateral token, which is also the fee token.
     pub token: Address,
-    /// The router whose relay-fee envelopes the key may sign.
-    pub router: Address,
-    /// The most `token` the key may approve to the router per session
-    /// (token-dec).
-    pub fee_budget: i128,
+    /// The only account relay fees may go to.
+    pub fee_recipient: Address,
 }
 
 #[contracttype]
 enum StorageKey {
     Config,
-    FeesSpent(Address, u32), // (smart_account, context_rule_id)
 }
 
 #[contracterror]
@@ -78,8 +78,7 @@ pub enum SessionPolicyError {
     FunctionNotAllowed = 4003,
     TransferNotAllowed = 4004,
     ApproveNotAllowed = 4005,
-    InvalidAmount = 4006,
-    FeeBudgetExceeded = 4007,
+    ForwardNotAllowed = 4006,
 }
 
 // ==========================================
@@ -93,13 +92,18 @@ const TTL_THRESHOLD: u32 = EXTEND_AMOUNT - 17280; // refresh at ~29 days
 /// redeems stay behind the passkey.
 const MARKET_FUNCTIONS: [&str; 3] = ["create_order", "cancel_order", "claim_credit"];
 
-/// The router functions that carry the wallet's signature. The plain router
-/// functions never ask for it.
-const ROUTER_FUNCTIONS: [&str; 3] = [
-    "multicall_with_fee",
-    "create_and_fill_with_fee",
-    "create_and_try_fill_with_fee",
-];
+/// The router functions a forward may target.
+const ROUTER_TARGETS: [&str; 3] = ["multicall", "create_and_fill", "create_and_try_fill"];
+
+/// The forwarder's signed projection:
+/// `[fee_token, max_fee_amount, expiration_ledger, fee_recipient,
+/// target_contract, target_fn]`, plus `target_args` for `forward`.
+const PROJECTION_FEE_TOKEN: u32 = 0;
+const PROJECTION_FEE_RECIPIENT: u32 = 3;
+const PROJECTION_TARGET_CONTRACT: u32 = 4;
+const PROJECTION_TARGET_FN: u32 = 5;
+const PROJECTION_LEN_UNSAFE: u32 = 6;
+const PROJECTION_LEN_SAFE: u32 = 7;
 
 // ==========================================
 // Contract
@@ -110,35 +114,43 @@ pub struct SessionPolicyContract;
 
 #[contractimpl]
 impl SessionPolicyContract {
-    /// Fixes the policy's markets, token, router and fee budget. There is no
-    /// way to change them later: a new configuration is a new deployment.
+    /// Fixes the policy's forwarder, router, markets, token and fee
+    /// recipient. There is no way to change them later: a new configuration
+    /// is a new deployment.
     ///
     /// # Errors
-    /// - [`SessionPolicyError::InvalidConfig`] if `markets` is empty,
-    ///   `fee_budget` is not positive, or the token, the router and the
-    ///   markets overlap.
+    /// - [`SessionPolicyError::InvalidConfig`] if `markets` is empty or any
+    ///   two of the configured addresses are the same.
     pub fn __constructor(
         e: Env,
+        forwarder: Address,
+        router: Address,
         markets: Vec<Address>,
         token: Address,
-        router: Address,
-        fee_budget: i128,
+        fee_recipient: Address,
     ) {
-        if markets.is_empty()
-            || fee_budget <= 0
-            || token == router
-            || markets.contains(&token)
-            || markets.contains(&router)
+        let mut seen: Vec<Address> = Vec::new(&e);
+        for address in [&forwarder, &router, &token, &fee_recipient]
+            .into_iter()
+            .cloned()
+            .chain(markets.iter())
         {
+            if seen.contains(&address) {
+                panic_with_error!(&e, SessionPolicyError::InvalidConfig);
+            }
+            seen.push_back(address);
+        }
+        if markets.is_empty() {
             panic_with_error!(&e, SessionPolicyError::InvalidConfig);
         }
         e.storage().instance().set(
             &StorageKey::Config,
             &Config {
+                forwarder,
+                router,
                 markets,
                 token,
-                router,
-                fee_budget,
+                fee_recipient,
             },
         );
     }
@@ -146,16 +158,6 @@ impl SessionPolicyContract {
     /// Returns the configuration fixed at deploy.
     pub fn get_config(e: Env) -> Config {
         read_config(&e)
-    }
-
-    /// Returns the relay fees the key has approved under
-    /// `(smart_account, context_rule_id)` (token-dec), so the UI can show
-    /// the remaining budget.
-    pub fn get_fees_spent(e: Env, smart_account: Address, context_rule_id: u32) -> i128 {
-        e.storage()
-            .persistent()
-            .get(&StorageKey::FeesSpent(smart_account, context_rule_id))
-            .unwrap_or(0)
     }
 }
 
@@ -167,7 +169,7 @@ impl Policy for SessionPolicyContract {
         e: &Env,
         context: Context,
         _authenticated_signers: Vec<Signer>,
-        context_rule: ContextRule,
+        _context_rule: ContextRule,
         smart_account: Address,
     ) {
         smart_account.require_auth();
@@ -187,10 +189,31 @@ impl Policy for SessionPolicyContract {
             panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
         };
 
-        if config.markets.contains(&contract) {
-            require_function(e, &fn_name, &MARKET_FUNCTIONS);
-        } else if contract == config.router {
-            require_function(e, &fn_name, &ROUTER_FUNCTIONS);
+        if contract == config.forwarder {
+            // The root of a relayed trade. Its args are the signed
+            // projection, not the full call.
+            let len = if fn_name == symbol_short!("forward") {
+                PROJECTION_LEN_SAFE
+            } else if fn_name == Symbol::new(e, "forward_unsafe") {
+                PROJECTION_LEN_UNSAFE
+            } else {
+                panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
+            };
+            let target_fn = args
+                .get(PROJECTION_TARGET_FN)
+                .and_then(|val| Symbol::try_from_val(e, &val).ok());
+            if args.len() != len
+                || address_arg(e, &args, PROJECTION_FEE_TOKEN) != Some(config.token)
+                || address_arg(e, &args, PROJECTION_FEE_RECIPIENT) != Some(config.fee_recipient)
+                || address_arg(e, &args, PROJECTION_TARGET_CONTRACT) != Some(config.router)
+                || !target_fn.is_some_and(|name| is_one_of(e, &name, &ROUTER_TARGETS))
+            {
+                panic_with_error!(e, SessionPolicyError::ForwardNotAllowed);
+            }
+        } else if config.markets.contains(&contract) {
+            if !is_one_of(e, &fn_name, &MARKET_FUNCTIONS) {
+                panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
+            }
         } else if contract == config.token {
             if fn_name == symbol_short!("transfer") {
                 // `transfer(from, to, amount)`: only the order escrow into a
@@ -201,28 +224,10 @@ impl Policy for SessionPolicyContract {
                 }
             } else if fn_name == symbol_short!("approve") {
                 // `approve(from, spender, amount, expiration_ledger)`: only the
-                // router's fee allowance, counted against the fee budget.
-                if address_arg(e, &args, 1) != Some(config.router) {
+                // forwarder's fee allowance, at any amount.
+                if address_arg(e, &args, 1) != Some(config.forwarder) {
                     panic_with_error!(e, SessionPolicyError::ApproveNotAllowed);
                 }
-                let amount = args
-                    .get(2)
-                    .and_then(|val| i128::try_from_val(e, &val).ok())
-                    .filter(|amount| *amount >= 0)
-                    .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::InvalidAmount));
-                let key = StorageKey::FeesSpent(smart_account, context_rule.id);
-                let spent = e
-                    .storage()
-                    .persistent()
-                    .get::<_, i128>(&key)
-                    .unwrap_or(0)
-                    .checked_add(amount)
-                    .filter(|spent| *spent <= config.fee_budget)
-                    .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::FeeBudgetExceeded));
-                e.storage().persistent().set(&key, &spent);
-                e.storage()
-                    .persistent()
-                    .extend_ttl(&key, TTL_THRESHOLD, EXTEND_AMOUNT);
             } else {
                 panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
             }
@@ -237,17 +242,12 @@ impl Policy for SessionPolicyContract {
         _context_rule: ContextRule,
         smart_account: Address,
     ) {
-        // Nothing to store: the configuration is fixed at deploy, and the
-        // fee counter starts at zero on first use.
+        // Nothing to store: the configuration is fixed at deploy.
         smart_account.require_auth();
     }
 
-    fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {
+    fn uninstall(_e: &Env, _context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
-
-        e.storage()
-            .persistent()
-            .remove(&StorageKey::FeesSpent(smart_account, context_rule.id));
     }
 }
 
@@ -262,16 +262,14 @@ fn read_config(e: &Env) -> Config {
         .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::InvalidConfig))
 }
 
-/// Traps with `FunctionNotAllowed` unless `fn_name` is one of `allowed`.
-fn require_function(e: &Env, fn_name: &Symbol, allowed: &[&str]) {
-    if !allowed.iter().any(|name| *fn_name == Symbol::new(e, name)) {
-        panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
-    }
+/// Whether `fn_name` is one of `allowed`.
+fn is_one_of(e: &Env, fn_name: &Symbol, allowed: &[&str]) -> bool {
+    allowed.iter().any(|name| *fn_name == Symbol::new(e, name))
 }
 
 /// Decodes `args[index]` as a plain address. A missing argument, a muxed
 /// address or any other value is `None`.
-fn address_arg(e: &Env, args: &Vec<soroban_sdk::Val>, index: u32) -> Option<Address> {
+fn address_arg(e: &Env, args: &Vec<Val>, index: u32) -> Option<Address> {
     args.get(index)
         .and_then(|val| Address::try_from_val(e, &val).ok())
 }

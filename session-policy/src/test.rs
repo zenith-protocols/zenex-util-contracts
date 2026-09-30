@@ -10,7 +10,6 @@ use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 use crate::contract::{Config, SessionPolicyContract, SessionPolicyContractClient};
 
 const SCALAR_7: i128 = 10_000_000; // one token unit at 7 decimals
-const BUDGET: i128 = 50 * SCALAR_7; // the $50 relay-fee budget
 const BALANCE: i128 = 1_000 * SCALAR_7; // the wallet's $1,000
 
 // ==========================================
@@ -21,9 +20,11 @@ struct Setup<'a> {
     e: Env,
     client: SessionPolicyContractClient<'a>,
     smart_account: Address,
-    market: Address,
+    forwarder: Address,
     router: Address,
+    market: Address,
     token: Address,
+    fee_recipient: Address,
 }
 
 /// A `Default` session rule with id `id`, as the frontend registers it.
@@ -44,36 +45,37 @@ impl Setup<'_> {
     fn new() -> Self {
         let e = Env::default();
         e.mock_all_auths();
-        let market = Address::generate(&e);
+        let forwarder = Address::generate(&e);
         let router = Address::generate(&e);
+        let market = Address::generate(&e);
         let token = Address::generate(&e);
+        let fee_recipient = Address::generate(&e);
         let policy = e.register(
             SessionPolicyContract,
             (
+                forwarder.clone(),
+                router.clone(),
                 vec![&e, market.clone()],
                 token.clone(),
-                router.clone(),
-                BUDGET,
+                fee_recipient.clone(),
             ),
         );
         Setup {
             client: SessionPolicyContractClient::new(&e, &policy),
             smart_account: Address::generate(&e),
-            market,
+            forwarder,
             router,
+            market,
             token,
+            fee_recipient,
             e,
         }
-    }
-
-    fn rule(&self, id: u32) -> ContextRule {
-        session_rule(&self.e, id)
     }
 
     /// Installs the policy under rule `id` with the empty parameter and
     /// returns the rule.
     fn install(&self, id: u32) -> ContextRule {
-        let rule = self.rule(id);
+        let rule = session_rule(&self.e, id);
         self.client.install(&(), &rule, &self.smart_account);
         rule
     }
@@ -106,19 +108,44 @@ impl Setup<'_> {
         self.call(&self.token, "approve", args)
     }
 
-    /// The user contexts of a router fee envelope `fn_name(calls = [],
-    /// token, max_fee_amount, fee_expiration)`: the signed prefix only.
-    fn envelope(&self, fn_name: &str, max_fee: i128) -> Context {
+    /// The signed projection of a forward that pays `fee_token` to
+    /// `recipient` and targets `target.target_fn`. `forward` appends
+    /// `target_args`.
+    fn projection(
+        &self,
+        fn_name: &str,
+        fee_token: &Address,
+        recipient: &Address,
+        target: &Address,
+        target_fn: &str,
+    ) -> Vec<Val> {
         let e = &self.e;
-        let calls: Vec<Val> = Vec::new(e);
-        let args = vec![
+        let mut args = vec![
             e,
-            calls.into_val(e),
-            self.token.into_val(e),
-            max_fee.into_val(e),
+            fee_token.into_val(e),
+            SCALAR_7.into_val(e),
             1_000u32.into_val(e),
+            recipient.into_val(e),
+            target.into_val(e),
+            Symbol::new(e, target_fn).into_val(e),
         ];
-        self.call(&self.router, fn_name, args)
+        if fn_name == "forward" {
+            let target_args: Vec<Val> = Vec::new(e);
+            args.push_back(target_args.into_val(e));
+        }
+        args
+    }
+
+    /// The root context of an honest relayed trade.
+    fn forward(&self, fn_name: &str, target_fn: &str) -> Context {
+        let args = self.projection(
+            fn_name,
+            &self.token,
+            &self.fee_recipient,
+            &self.router,
+            target_fn,
+        );
+        self.call(&self.forwarder, fn_name, args)
     }
 
     fn enforce(&self, context: &Context, rule: &ContextRule) {
@@ -138,10 +165,6 @@ impl Setup<'_> {
             other => panic!("expected a contract error, got {other:?}"),
         }
     }
-
-    fn fees_spent(&self, rule: &ContextRule) -> i128 {
-        self.client.get_fees_spent(&self.smart_account, &rule.id)
-    }
 }
 
 // ==========================================
@@ -151,80 +174,83 @@ impl Setup<'_> {
 #[test]
 fn test_constructor_stores_config() {
     let s = Setup::new();
-
     assert_eq!(
         s.client.get_config(),
         Config {
+            forwarder: s.forwarder.clone(),
+            router: s.router.clone(),
             markets: vec![&s.e, s.market.clone()],
             token: s.token.clone(),
-            router: s.router.clone(),
-            fee_budget: BUDGET,
+            fee_recipient: s.fee_recipient.clone(),
         }
     );
 }
 
 /// Registers the policy with the given constructor arguments.
-fn register(e: &Env, markets: Vec<Address>, token: &Address, router: &Address, fee_budget: i128) {
+fn register(
+    e: &Env,
+    forwarder: &Address,
+    router: &Address,
+    markets: Vec<Address>,
+    token: &Address,
+    fee_recipient: &Address,
+) {
     e.register(
         SessionPolicyContract,
-        (markets, token.clone(), router.clone(), fee_budget),
+        (
+            forwarder.clone(),
+            router.clone(),
+            markets,
+            token.clone(),
+            fee_recipient.clone(),
+        ),
     );
+}
+
+/// Five distinct addresses: forwarder, router, market, token, recipient.
+fn addresses(e: &Env) -> [Address; 5] {
+    core::array::from_fn(|_| Address::generate(e))
 }
 
 #[test]
 #[should_panic(expected = "Error(Contract, #4001)")]
 fn test_constructor_rejects_empty_markets() {
     let e = Env::default();
-    let (token, router) = (Address::generate(&e), Address::generate(&e));
-    register(&e, Vec::new(&e), &token, &router, BUDGET);
+    let [forwarder, router, _, token, recipient] = addresses(&e);
+    register(&e, &forwarder, &router, Vec::new(&e), &token, &recipient);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4001)")]
-fn test_constructor_rejects_zero_fee_budget() {
+fn test_constructor_rejects_every_overlap() {
     let e = Env::default();
-    let (market, token, router) = (
-        Address::generate(&e),
-        Address::generate(&e),
-        Address::generate(&e),
-    );
-    register(&e, vec![&e, market], &token, &router, 0);
-}
+    let [forwarder, router, market, token, recipient] = addresses(&e);
+    let base = [&forwarder, &router, &market, &token, &recipient];
 
-#[test]
-#[should_panic(expected = "Error(Contract, #4001)")]
-fn test_constructor_rejects_negative_fee_budget() {
-    let e = Env::default();
-    let (market, token, router) = (
-        Address::generate(&e),
-        Address::generate(&e),
-        Address::generate(&e),
-    );
-    register(&e, vec![&e, market], &token, &router, -1);
-}
+    // Every pair of roles sharing one address is rejected.
+    for i in 0..5 {
+        for j in (i + 1)..5 {
+            let mut roles = base.map(|a| a.clone());
+            roles[j] = roles[i].clone();
+            let [fw, rt, mk, tk, rc] = roles;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                register(&e, &fw, &rt, vec![&e, mk.clone()], &tk, &rc)
+            }));
+            assert!(result.is_err(), "roles {i} and {j} overlap");
+        }
+    }
 
-#[test]
-#[should_panic(expected = "Error(Contract, #4001)")]
-fn test_constructor_rejects_token_as_market() {
-    let e = Env::default();
-    let (token, router) = (Address::generate(&e), Address::generate(&e));
-    register(&e, vec![&e, token.clone()], &token, &router, BUDGET);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #4001)")]
-fn test_constructor_rejects_router_as_market() {
-    let e = Env::default();
-    let (token, router) = (Address::generate(&e), Address::generate(&e));
-    register(&e, vec![&e, router.clone()], &token, &router, BUDGET);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #4001)")]
-fn test_constructor_rejects_router_as_token() {
-    let e = Env::default();
-    let (market, token) = (Address::generate(&e), Address::generate(&e));
-    register(&e, vec![&e, market], &token, &token, BUDGET);
+    // A market listed twice is an overlap too.
+    let twice = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        register(
+            &e,
+            &forwarder,
+            &router,
+            vec![&e, market.clone(), market.clone()],
+            &token,
+            &recipient,
+        )
+    }));
+    assert!(twice.is_err());
 }
 
 // ==========================================
@@ -232,31 +258,200 @@ fn test_constructor_rejects_router_as_token() {
 // ==========================================
 
 #[test]
-fn test_install_takes_empty_param_and_stores_nothing() {
+fn test_install_and_uninstall_take_empty_param_and_store_nothing() {
+    let s = Setup::new();
+    let rule = s.install(0);
+    s.client.uninstall(&rule, &s.smart_account);
+    // Reinstalling under the same rule is fine: there is no state to clash.
+    s.install(0);
+}
+
+// ==========================================
+// Enforce — Forwarder Tests
+// ==========================================
+
+#[test]
+fn test_enforce_allows_pinned_forwards_to_every_router_target() {
     let s = Setup::new();
     let rule = s.install(0);
 
-    assert_eq!(s.fees_spent(&rule), 0);
+    for fn_name in ["forward", "forward_unsafe"] {
+        for target_fn in ["multicall", "create_and_fill", "create_and_try_fill"] {
+            s.enforce(&s.forward(fn_name, target_fn), &rule);
+        }
+    }
 }
 
 #[test]
-fn test_uninstall_clears_fee_counter() {
+fn test_enforce_blocks_other_forwarder_functions() {
     let s = Setup::new();
     let rule = s.install(0);
-    s.enforce(&s.approve(&s.router, 30 * SCALAR_7), &rule);
-    assert_eq!(s.fees_spent(&rule), 30 * SCALAR_7);
+    let args = s.projection(
+        "forward_unsafe",
+        &s.token,
+        &s.fee_recipient,
+        &s.router,
+        "create_and_fill",
+    );
 
-    s.client.uninstall(&rule, &s.smart_account);
-
-    assert_eq!(s.fees_spent(&rule), 0);
+    for name in ["forward_all", "upgrade", "collect"] {
+        assert_eq!(
+            s.enforce_error(&s.call(&s.forwarder, name, args.clone()), &rule),
+            4003,
+            "{name}"
+        );
+    }
 }
 
 #[test]
-fn test_uninstall_without_counter_succeeds() {
+fn test_enforce_blocks_a_forward_paying_another_recipient() {
+    let s = Setup::new();
+    let rule = s.install(0);
+    let attacker = Address::generate(&s.e);
+
+    for fn_name in ["forward", "forward_unsafe"] {
+        let args = s.projection(fn_name, &s.token, &attacker, &s.router, "create_and_fill");
+        assert_eq!(
+            s.enforce_error(&s.call(&s.forwarder, fn_name, args), &rule),
+            4006,
+            "{fn_name}"
+        );
+    }
+}
+
+#[test]
+fn test_enforce_blocks_a_forward_in_another_fee_token() {
+    let s = Setup::new();
+    let rule = s.install(0);
+    let other_token = Address::generate(&s.e);
+
+    let args = s.projection(
+        "forward_unsafe",
+        &other_token,
+        &s.fee_recipient,
+        &s.router,
+        "create_and_fill",
+    );
+    assert_eq!(
+        s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", args), &rule),
+        4006
+    );
+}
+
+#[test]
+fn test_enforce_blocks_a_forward_to_another_target() {
     let s = Setup::new();
     let rule = s.install(0);
 
-    s.client.uninstall(&rule, &s.smart_account);
+    // The token itself (a drain through the forwarder), a market directly,
+    // and any other contract.
+    for target in [s.token.clone(), s.market.clone(), Address::generate(&s.e)] {
+        let args = s.projection(
+            "forward_unsafe",
+            &s.token,
+            &s.fee_recipient,
+            &target,
+            "create_and_fill",
+        );
+        assert_eq!(
+            s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", args), &rule),
+            4006
+        );
+    }
+}
+
+#[test]
+fn test_enforce_blocks_a_forward_to_another_router_function() {
+    let s = Setup::new();
+    let rule = s.install(0);
+
+    for target_fn in [
+        "multicall_try",
+        "multicall_with_fee",
+        "create_and_fill_with_fee",
+        "transfer_from",
+    ] {
+        let args = s.projection(
+            "forward_unsafe",
+            &s.token,
+            &s.fee_recipient,
+            &s.router,
+            target_fn,
+        );
+        assert_eq!(
+            s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", args), &rule),
+            4006,
+            "{target_fn}"
+        );
+    }
+}
+
+#[test]
+fn test_enforce_blocks_a_malformed_projection() {
+    let s = Setup::new();
+    let rule = s.install(0);
+    let e = &s.e;
+
+    // `forward` without `target_args`, and `forward_unsafe` with them.
+    let short = s.projection(
+        "forward_unsafe",
+        &s.token,
+        &s.fee_recipient,
+        &s.router,
+        "multicall",
+    );
+    assert_eq!(
+        s.enforce_error(&s.call(&s.forwarder, "forward", short), &rule),
+        4006
+    );
+    let long = s.projection(
+        "forward",
+        &s.token,
+        &s.fee_recipient,
+        &s.router,
+        "multicall",
+    );
+    assert_eq!(
+        s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", long), &rule),
+        4006
+    );
+
+    // A recipient that is not an address, and a target function that is not
+    // a symbol.
+    let mut bad_recipient = s.projection(
+        "forward_unsafe",
+        &s.token,
+        &s.fee_recipient,
+        &s.router,
+        "create_and_fill",
+    );
+    bad_recipient.set(3, 7i128.into_val(e));
+    assert_eq!(
+        s.enforce_error(
+            &s.call(&s.forwarder, "forward_unsafe", bad_recipient),
+            &rule
+        ),
+        4006
+    );
+    let mut bad_target_fn = s.projection(
+        "forward_unsafe",
+        &s.token,
+        &s.fee_recipient,
+        &s.router,
+        "create_and_fill",
+    );
+    bad_target_fn.set(5, String::from_str(e, "create_and_fill").into_val(e));
+    assert_eq!(
+        s.enforce_error(
+            &s.call(&s.forwarder, "forward_unsafe", bad_target_fn),
+            &rule
+        ),
+        4006
+    );
+    assert_eq!(
+        s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", vec![e]), &rule),
+        4006
+    );
 }
 
 // ==========================================
@@ -271,25 +466,26 @@ fn test_enforce_allows_market_trading_functions() {
     for name in ["create_order", "cancel_order", "claim_credit"] {
         s.enforce(&s.call(&s.market, name, vec![&s.e]), &rule);
     }
-    assert_eq!(s.fees_spent(&rule), 0);
 }
 
 #[test]
 fn test_enforce_allows_every_configured_market() {
     let e = Env::default();
     e.mock_all_auths();
-    let [market_a, market_b, token, router, account] =
-        std::array::from_fn(|_| Address::generate(&e));
+    let [forwarder, router, market_a, token, recipient] = addresses(&e);
+    let market_b = Address::generate(&e);
     let policy = e.register(
         SessionPolicyContract,
         (
+            forwarder,
+            router,
             vec![&e, market_a.clone(), market_b.clone()],
             token.clone(),
-            router,
-            BUDGET,
+            recipient,
         ),
     );
     let client = SessionPolicyContractClient::new(&e, &policy);
+    let smart_account = Address::generate(&e);
     let rule = session_rule(&e, 0);
     let signers: Vec<Signer> = Vec::new(&e);
 
@@ -299,19 +495,18 @@ fn test_enforce_allows_every_configured_market() {
             fn_name: Symbol::new(&e, "create_order"),
             args: vec![&e],
         });
-        client.enforce(&order, &signers, &rule, &account);
-
+        client.enforce(&order, &signers, &rule, &smart_account);
         let escrow = Context::Contract(ContractContext {
             contract: token.clone(),
             fn_name: Symbol::new(&e, "transfer"),
             args: vec![
                 &e,
-                account.into_val(&e),
+                smart_account.into_val(&e),
                 market.into_val(&e),
-                BALANCE.into_val(&e),
+                SCALAR_7.into_val(&e),
             ],
         });
-        client.enforce(&escrow, &signers, &rule, &account);
+        client.enforce(&escrow, &signers, &rule, &smart_account);
     }
 }
 
@@ -320,55 +515,15 @@ fn test_enforce_blocks_other_market_functions() {
     let s = Setup::new();
     let rule = s.install(0);
 
-    // Vault deposits and redeems stay behind the passkey, and the keeper
-    // entry points never carry the wallet's signature.
     for name in [
         "create_vault_order",
         "cancel_vault_order",
         "execute_order",
+        "set_config",
         "upgrade",
     ] {
         assert_eq!(
             s.enforce_error(&s.call(&s.market, name, vec![&s.e]), &rule),
-            4003,
-            "{name}"
-        );
-    }
-}
-
-// ==========================================
-// Enforce — Router Tests
-// ==========================================
-
-#[test]
-fn test_enforce_allows_router_fee_envelopes() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    for name in [
-        "multicall_with_fee",
-        "create_and_fill_with_fee",
-        "create_and_try_fill_with_fee",
-    ] {
-        s.enforce(&s.envelope(name, SCALAR_7), &rule);
-    }
-    // The envelope's max fee counts at its approve, not here.
-    assert_eq!(s.fees_spent(&rule), 0);
-}
-
-#[test]
-fn test_enforce_blocks_other_router_functions() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    for name in [
-        "multicall",
-        "multicall_try",
-        "create_and_fill",
-        "create_and_try_fill",
-    ] {
-        assert_eq!(
-            s.enforce_error(&s.call(&s.router, name, vec![&s.e]), &rule),
             4003,
             "{name}"
         );
@@ -384,53 +539,55 @@ fn test_enforce_allows_escrow_transfer_into_market() {
     let s = Setup::new();
     let rule = s.install(0);
 
-    // The escrow amount is unconstrained and spends no fee budget.
+    // The escrow amount is the trade, not a fee: it is unconstrained.
     s.enforce(&s.transfer(s.market.into_val(&s.e), BALANCE), &rule);
-    assert_eq!(s.fees_spent(&rule), 0);
 }
 
 #[test]
 fn test_enforce_blocks_transfer_outside_markets() {
     let s = Setup::new();
     let rule = s.install(0);
-    let attacker = Address::generate(&s.e);
 
-    for to in [&attacker, &s.router, &s.token, &s.smart_account] {
+    for to in [
+        Address::generate(&s.e),
+        s.forwarder.clone(),
+        s.router.clone(),
+        s.fee_recipient.clone(),
+    ] {
         assert_eq!(
-            s.enforce_error(&s.transfer(to.into_val(&s.e), 1), &rule),
+            s.enforce_error(&s.transfer(to.into_val(&s.e), SCALAR_7), &rule),
             4004
         );
     }
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4004)")]
 fn test_enforce_blocks_transfer_to_muxed_address() {
     let s = Setup::new();
     let rule = s.install(0);
+    let muxed = MuxedAddress::new(MuxedAddress::generate(&s.e).address(), 1);
 
-    let attacker_g = MuxedAddress::generate(&s.e).address();
-    let muxed_attacker = MuxedAddress::new(attacker_g, 42);
-    s.enforce(&s.transfer(muxed_attacker.to_val(), 1), &rule);
+    assert_eq!(
+        s.enforce_error(&s.transfer(muxed.to_val(), SCALAR_7), &rule),
+        4004
+    );
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4004)")]
-fn test_enforce_blocks_transfer_with_non_address_to() {
+fn test_enforce_blocks_transfer_with_bad_to() {
     let s = Setup::new();
     let rule = s.install(0);
+    let e = &s.e;
 
-    s.enforce(&s.transfer(7u32.into_val(&s.e), 1), &rule);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #4004)")]
-fn test_enforce_blocks_transfer_without_to() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    let args = vec![&s.e, s.smart_account.into_val(&s.e)];
-    s.enforce(&s.call(&s.token, "transfer", args), &rule);
+    assert_eq!(
+        s.enforce_error(&s.transfer(7i128.into_val(e), SCALAR_7), &rule),
+        4004
+    );
+    let no_to = vec![e, s.smart_account.into_val(e)];
+    assert_eq!(
+        s.enforce_error(&s.call(&s.token, "transfer", no_to), &rule),
+        4004
+    );
 }
 
 // ==========================================
@@ -438,102 +595,33 @@ fn test_enforce_blocks_transfer_without_to() {
 // ==========================================
 
 #[test]
-fn test_enforce_allows_router_approve_within_budget() {
+fn test_enforce_allows_forwarder_approve_at_any_amount() {
     let s = Setup::new();
     let rule = s.install(0);
 
-    s.enforce(&s.approve(&s.router, SCALAR_7), &rule);
-    assert_eq!(s.fees_spent(&rule), SCALAR_7);
-}
-
-#[test]
-fn test_enforce_zero_approve_spends_nothing() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    // The router wipes its leftover allowance with `approve(.., 0, ..)`.
-    s.enforce(&s.approve(&s.router, 0), &rule);
-    assert_eq!(s.fees_spent(&rule), 0);
-}
-
-#[test]
-fn test_enforce_fee_budget_is_exact() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    s.enforce(&s.approve(&s.router, 30 * SCALAR_7), &rule);
-    s.enforce(&s.approve(&s.router, 20 * SCALAR_7), &rule);
-    assert_eq!(s.fees_spent(&rule), BUDGET);
-
-    // One more unit is over budget, and the rejected context spends nothing.
-    assert_eq!(s.enforce_error(&s.approve(&s.router, 1), &rule), 4007);
-    assert_eq!(s.fees_spent(&rule), BUDGET);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #4007)")]
-fn test_enforce_blocks_single_approve_over_budget() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    s.enforce(&s.approve(&s.router, BUDGET + 1), &rule);
-}
-
-#[test]
-fn test_enforce_blocks_approve_to_other_spenders() {
-    let s = Setup::new();
-    let rule = s.install(0);
-    let attacker = Address::generate(&s.e);
-
-    for spender in [&attacker, &s.market, &s.token] {
-        assert_eq!(s.enforce_error(&s.approve(spender, 0), &rule), 4005);
+    for amount in [0, SCALAR_7, i128::MAX] {
+        s.enforce(&s.approve(&s.forwarder, amount), &rule);
     }
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #4005)")]
-fn test_enforce_blocks_approve_without_spender() {
+fn test_enforce_blocks_approve_to_anyone_else() {
     let s = Setup::new();
     let rule = s.install(0);
 
-    let args = vec![&s.e, s.smart_account.into_val(&s.e)];
-    s.enforce(&s.call(&s.token, "approve", args), &rule);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #4006)")]
-fn test_enforce_blocks_negative_approve() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    s.enforce(&s.approve(&s.router, -1), &rule);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #4006)")]
-fn test_enforce_blocks_undecodable_approve_amount() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    let e = &s.e;
-    let args = vec![
-        e,
-        s.smart_account.into_val(e),
-        s.router.into_val(e),
-        5u32.into_val(e),
-    ];
-    s.enforce(&s.call(&s.token, "approve", args), &rule);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #4006)")]
-fn test_enforce_blocks_approve_without_amount() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    let e = &s.e;
-    let args = vec![e, s.smart_account.into_val(e), s.router.into_val(e)];
-    s.enforce(&s.call(&s.token, "approve", args), &rule);
+    for spender in [
+        s.router.clone(),
+        s.market.clone(),
+        s.fee_recipient.clone(),
+        Address::generate(&s.e),
+    ] {
+        assert_eq!(s.enforce_error(&s.approve(&spender, SCALAR_7), &rule), 4005);
+    }
+    let no_spender = vec![&s.e, s.smart_account.into_val(&s.e)];
+    assert_eq!(
+        s.enforce_error(&s.call(&s.token, "approve", no_spender), &rule),
+        4005
+    );
 }
 
 #[test]
@@ -568,12 +656,15 @@ fn test_enforce_blocks_other_contracts() {
     let rule = s.install(0);
     let (vault, other_token) = (Address::generate(&s.e), Address::generate(&s.e));
 
-    // The wallet itself (no signer, rule or upgrade calls), the vault, and
-    // any other token.
+    // The wallet itself (no signer, rule or upgrade calls), the router
+    // directly (its old `*_with_fee` path included), the vault and any other
+    // token.
     let contexts = [
         s.call(&s.smart_account, "add_context_rule", vec![&s.e]),
+        s.call(&s.router, "multicall_with_fee", vec![&s.e]),
+        s.call(&s.router, "create_and_fill", vec![&s.e]),
         s.call(&vault, "transfer", vec![&s.e]),
-        s.call(&other_token, "transfer", vec![&s.e]),
+        s.call(&other_token, "approve", vec![&s.e]),
     ];
     for context in contexts.iter() {
         assert_eq!(s.enforce_error(context, &rule), 4002);
@@ -594,43 +685,11 @@ fn test_enforce_blocks_create_contract() {
 }
 
 // ==========================================
-// Enforce — Fee Counter Isolation Tests
+// Regression Tests — earlier bypasses
 // ==========================================
 
 #[test]
-fn test_separate_rules_have_separate_budgets() {
-    let s = Setup::new();
-    let rule_0 = s.install(0);
-    let rule_1 = s.install(1);
-
-    s.enforce(&s.approve(&s.router, BUDGET), &rule_0);
-    s.enforce(&s.approve(&s.router, SCALAR_7), &rule_1);
-
-    assert_eq!(s.fees_spent(&rule_0), BUDGET);
-    assert_eq!(s.fees_spent(&rule_1), SCALAR_7);
-}
-
-#[test]
-fn test_new_rule_renews_the_budget() {
-    let s = Setup::new();
-    let spent_rule = s.install(0);
-    s.enforce(&s.approve(&s.router, BUDGET), &spent_rule);
-    assert_eq!(s.enforce_error(&s.approve(&s.router, 1), &spent_rule), 4007);
-
-    // Renewal: the frontend removes the spent rule and adds a new one.
-    s.client.uninstall(&spent_rule, &s.smart_account);
-    let renewed = s.install(1);
-
-    s.enforce(&s.approve(&s.router, BUDGET), &renewed);
-    assert_eq!(s.fees_spent(&renewed), BUDGET);
-}
-
-// ==========================================
-// Regression Tests — v1 bypasses
-// ==========================================
-
-#[test]
-fn test_regression_approve_to_attacker_is_blocked() {
+fn test_regression_v1_approve_to_attacker_is_blocked() {
     let s = Setup::new();
     let rule = s.install(0);
     let attacker = Address::generate(&s.e);
@@ -643,7 +702,7 @@ fn test_regression_approve_to_attacker_is_blocked() {
 }
 
 #[test]
-fn test_regression_muxed_transfer_is_blocked() {
+fn test_regression_v1_muxed_transfer_is_blocked() {
     let s = Setup::new();
     let rule = s.install(0);
 
@@ -657,18 +716,26 @@ fn test_regression_muxed_transfer_is_blocked() {
 }
 
 #[test]
-fn test_regression_router_fee_envelope_is_capped() {
+fn test_regression_v1_router_fee_envelope_is_blocked() {
     let s = Setup::new();
     let rule = s.install(0);
 
     // v1 let `multicall_with_fee(calls = [], max_fee_amount = balance, ..)`
-    // drain the wallet: the fee reaches its recipient by `transfer_from` with
-    // the router as spender, so only the approve shows.
-    s.enforce(&s.envelope("multicall_with_fee", BALANCE), &rule);
-    assert_eq!(s.enforce_error(&s.approve(&s.router, BALANCE), &rule), 4007);
-    assert_eq!(s.fees_spent(&rule), 0);
-
-    // The most any sequence of envelopes can take is the budget.
-    s.enforce(&s.approve(&s.router, BUDGET), &rule);
-    assert_eq!(s.enforce_error(&s.approve(&s.router, 1), &rule), 4007);
+    // drain the wallet: its fee recipient is unsigned, and the router can
+    // spend its own allowance. v4 accepts neither the envelope nor an
+    // approve to the router.
+    let e = &s.e;
+    let calls: Vec<Val> = Vec::new(e);
+    let envelope = vec![
+        e,
+        calls.into_val(e),
+        s.token.into_val(e),
+        BALANCE.into_val(e),
+        1_000u32.into_val(e),
+    ];
+    assert_eq!(
+        s.enforce_error(&s.call(&s.router, "multicall_with_fee", envelope), &rule),
+        4002
+    );
+    assert_eq!(s.enforce_error(&s.approve(&s.router, BALANCE), &rule), 4005);
 }
