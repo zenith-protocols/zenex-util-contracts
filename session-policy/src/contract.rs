@@ -1,46 +1,5 @@
-//! # Session Policy Contract
-//!
-//! A policy for trading session keys. The frontend registers an ed25519
-//! session key on the smart account under a `Default` context rule with a
-//! `valid_until`, so trades sign without a passkey prompt until the rule
-//! expires. The account calls `enforce` once for every auth context the key
-//! signs.
-//!
-//! The fee forwarder, the router, the markets, the collateral token and the
-//! fee recipient are fixed at deploy, one instance-storage entry each. There
-//! is no admin and no per-account state: a rule installs the policy with an
-//! empty parameter, and install stores nothing.
-//!
-//! Every signer of the session rule must have signed. A wallet whose rule has
-//! a policy leaves that check to the policy, so without it an authorization
-//! with no signature at all would pass. Given the signature, the policy lets
-//! through only:
-//!
-//! - `forward` / `forward_dynamic` on the forwarder, when the signed
-//!   projection pays `fee_token = token` to `fee_recipient` and targets the
-//!   router's `multicall`, `create_and_fill` or `create_and_try_fill`;
-//! - `create_order`, `cancel_order` and `claim_credit` on the markets;
-//! - `transfer` of the token into a market, which is the order escrow;
-//! - `approve` of the token to the forwarder, the fee allowance.
-//!
-//! Everything else fails closed: other contracts (the wallet itself, the
-//! router, the vault, other tokens), other functions, and every non-contract
-//! context.
-//!
-//! ## What a stolen key can do
-//!
-//! It can trade on the markets. Losses and fees mostly go to the vault, plus
-//! the execution fee of each order it fills itself. It can pay relay fees,
-//! but only to `fee_recipient`. It cannot withdraw, move other tokens,
-//! approve anyone but the forwarder, or call the wallet, the router, the
-//! vault or any other contract.
-//!
-//! ## Why a forwarder allowance needs no cap
-//!
-//! The forwarder refuses `transfer_from` and `burn_from` targets, so only its
-//! own fee step can spend an allowance it holds. That step pulls from the
-//! wallet only under the wallet's root authorization, and pays the
-//! `fee_recipient` in the signed projection, which this policy pins.
+//! Session policy: limits a wallet's trading session key to the Zenex trade
+//! flow, with relay fees paid only to the pinned recipient. See README.md.
 use soroban_sdk::{
     auth::{Context, ContractContext},
     contract, contracterror, contractimpl, panic_with_error, symbol_short, Address, Env, Symbol,

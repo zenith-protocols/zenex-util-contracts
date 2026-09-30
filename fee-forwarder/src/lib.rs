@@ -1,89 +1,9 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
-//! Fee forwarder: a stateless fee-abstraction primitive. Deploy once, anyone
-//! uses it. A user pays the relayer in a token instead of native XLM, and the
-//! forwarder makes the user's call in the same invocation.
-//!
-//! # Signed projection
-//!
-//! The user authorizes a projection of the arguments through
-//! `require_auth_for_args`:
-//!
-//! - [`FeeForwarderContract::forward`] signs `(fee_token, max_fee_amount,
-//!   expiration_ledger, fee_recipient, target_contract, target_fn,
-//!   target_args)`.
-//! - [`FeeForwarderContract::forward_dynamic`] signs the same projection
-//!   without `target_args`, so a relayer can refresh them after signing, such
-//!   as a fresh price update.
-//!
-//! `fee_amount` stays outside both: the relayer sets it, at most
-//! `max_fee_amount`, once the final transaction is simulated. `fee_recipient`
-//! sits at index 3 of both projections.
-//!
-//! OpenZeppelin's forwarder leaves the recipient to the relayer. Here the
-//! user signs it, so a signature pays only the recipient it names, and a
-//! wallet policy can pin that recipient.
-//!
-//! # Allowances
-//!
-//! The fee is collected by OpenZeppelin's own `collect_fee` with Eager
-//! approval, from the `stellar-fee-abstraction` crate pinned to the head of
-//! OpenZeppelin's `v0.9.0` branch (commit `df602b6`). That code is UNRELEASED
-//! and UNAUDITED. It is used because only that branch carries
-//! [OpenZeppelin/stellar-contracts#873], the fix for issue #875: the user
-//! approves `max_fee_amount`, the forwarder pulls the whole `max_fee_amount`
-//! to itself, pays `fee_amount` to `fee_recipient` and refunds the rest. The
-//! pull consumes the allowance, so it ends at zero, and the user's balance
-//! must cover `max_fee_amount`, not only `fee_amount`. Every released version
-//! (up to 0.7.2 and 0.8.0-rc.3) pulls only the fee and leaves the rest of the
-//! allowance standing.
-//!
-//! The forwarder calls the target directly, and a contract is authorized for
-//! the calls it makes directly, so a target of `token.transfer_from(forwarder,
-//! victim, …)` would spend any allowance the victim holds to the forwarder.
-//! Two rules close that:
-//!
-//! - The fee pull consumes the allowance before the target runs, so no fee
-//!   allowance outlives the collection.
-//! - `transfer_from` and `burn_from`, the token functions that spend an
-//!   allowance, are refused as a target on every contract. An allowance a
-//!   user grants the forwarder outside a forward can therefore never be
-//!   spent through one.
-//!
-//! OpenZeppelin keeps the fee in the contract when the recipient is the
-//! contract itself, for a later sweep. This forwarder has no sweep, and a
-//! forward whose target is the token's `transfer` from the forwarder can move
-//! any balance it holds, so such a fee would go to whoever takes it first.
-//! The forwarder is therefore refused as `fee_recipient`.
-//!
-//! [OpenZeppelin/stellar-contracts#873]:
-//!     https://github.com/OpenZeppelin/stellar-contracts/pull/873
-//!
-//! # `forward_dynamic`
-//!
-//! Unsigned `target_args` bind nothing at the root. The target flow must
-//! protect the user's intent itself: every call that moves the user's funds
-//! must require the user's own authorization on its exact arguments. A Zenex
-//! order does: `create_order` calls `user.require_auth()`, so its arguments
-//! are part of the signed tree whatever the relayer puts in `target_args`.
-//!
-//! # Errors and events
-//!
-//! Both entry points fail with:
-//!
-//! - `FeeForwarderError::TargetNotAllowed` (6001) if `target_fn` is
-//!   `transfer_from` or `burn_from`;
-//! - `FeeForwarderError::InvalidRecipient` (6002) if `fee_recipient` is the
-//!   forwarder;
-//! - `FeeAbstractionError::InvalidFeeBounds` if `fee_amount` is not above
-//!   zero or exceeds `max_fee_amount`;
-//! - `FeeAbstractionError::InvalidUser` if `user` is the forwarder;
-//! - the token's own error if `user` holds less than `max_fee_amount`.
-//!
-//! A successful call emits `["fee_collected", user, recipient]` with data
-//! `[token, amount]`, then `["forward_executed", user, target_contract]` with
-//! data `[target_fn, target_args]`.
+//! Fee forwarder: a stateless fee-abstraction contract. A user pays the relayer
+//! in a token, and the forwarder makes the user's call in the same invocation.
+//! See README.md.
 
 #[cfg(test)]
 mod test;
@@ -130,7 +50,7 @@ impl FeeForwarderContract {
     /// * `user` - The fee payer.
     /// * `fee_recipient` - The fee payee.
     ///
-    /// Errors and events are listed in the crate docs.
+    /// Errors and events: see README.md.
     pub fn forward(
         e: Env,
         fee_token: Address,
@@ -178,7 +98,7 @@ impl FeeForwarderContract {
     ///
     /// # Errors and events
     ///
-    /// * Listed in the crate docs, the same as [`Self::forward`].
+    /// * See README.md, the same as [`Self::forward`].
     ///
     /// # Notes
     ///
