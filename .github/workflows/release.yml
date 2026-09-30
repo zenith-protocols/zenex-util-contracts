@@ -1,0 +1,58 @@
+name: Release
+
+# A version tag builds every contract with stellar.expert's reusable workflow.
+# Each job publishes a GitHub release with the optimized WASM, attests its
+# build provenance and submits the WASM hash to stellar.expert, which marks a
+# contract running that exact WASM as verified against this source. See the
+# README's Releases section.
+on:
+  push:
+    tags:
+      # Exact versions only: the per-contract release tags the jobs create
+      # (`v1.2.3_<package>_...`) never match.
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  id-token: write
+  contents: write
+  attestations: write
+
+# No `relative_path`: the crates are members of the root workspace, so each
+# job builds from the root with `package`, the layout of verified multi-contract
+# workspaces such as reflector-network/reflector-contract.
+jobs:
+  fee-forwarder:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'fee-forwarder'
+      package: 'fee-forwarder'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}
+
+  market-router:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'market-router'
+      package: 'market-router'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}
+
+  session-policy:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'session-policy'
+      package: 'session-policy'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}
+
+  referral:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'referral'
+      package: 'referral'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}

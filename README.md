@@ -172,13 +172,35 @@ CI (`.github/workflows/ci.yml`) runs `cargo fmt --all -- --check` and `cargo tes
 --workspace` on every push and pull request. The tests need no built WASM: the router suite loads the
 committed `market-router/testdata/market.wasm`.
 
+## Releases
+
+Pushing a version tag (`v1.2.3`) runs `.github/workflows/release.yml`: one job per contract on
+stellar.expert's reusable [soroban-build-workflow](https://github.com/stellar-expert/soroban-build-workflow),
+pinned to its v27.0.0 commit. Each job builds the contract with stellar-cli 27.0.0, publishes a
+GitHub release with the WASM, attests its build provenance and submits the WASM hash to
+stellar.expert, which then shows a contract running that exact WASM as verified against this source.
+
+- Verification needs the repository to be public (planned): stellar.expert reads the source, and
+  GitHub attests builds of private repositories only on Enterprise Cloud, so until then a tag run
+  publishes the releases and fails at the attest step.
+- stellar.expert's intake currently drops submissions while the job stays green
+  ([soroban-build-workflow#9](https://github.com/stellar-expert/soroban-build-workflow/issues/9)).
+  The attestation side is expected to work once stellar.expert fixes it, with no change here.
+- Deploy the WASM attached to the release. It embeds `source_repo` and stellar-cli 27.0.0 as
+  `cliver`, so its hash differs from `make` output.
+- Tag the head of `main`: each release's own tag (`<tag>_<package>_pkg0.0.0_cli27.0.0`) is created
+  at the default branch head. Leave GitHub's immutable releases off; the release attestation they
+  add may break stellar.expert's matching
+  ([soroban-build-workflow#8](https://github.com/stellar-expert/soroban-build-workflow/issues/8)).
+
 ## Deployment
 
 `make` writes optimized WASM to `target/wasm32v1-none/release/`.
 
 `make release` builds the release WASMs into `wasm/` from a clean checkout and embeds the
-checked-out commit as the `source_commit` contract meta. Commit the output in the next commit. No
-release has been cut from this workspace yet.
+checked-out commit as the `source_commit` contract meta. Commit the output in the next commit. A
+verifiable release comes from a version tag instead (see Releases). No release has been cut from
+this workspace yet.
 
 | Contract | Testnet address | Deployed wasm sha256 |
 |---|---|---|
