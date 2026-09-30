@@ -9,7 +9,12 @@
 //! The fee forwarder, the router, the markets, the collateral token and the
 //! fee recipient are fixed at deploy, one instance-storage entry each. There
 //! is no admin and no per-account state: a rule installs the policy with an
-//! empty parameter. The policy lets through only:
+//! empty parameter, and install stores nothing.
+//!
+//! Every signer of the session rule must have signed. A wallet whose rule has
+//! a policy leaves that check to the policy, so without it an authorization
+//! with no signature at all would pass. Given the signature, the policy lets
+//! through only:
 //!
 //! - `forward` / `forward_unsafe` on the forwarder, when the signed
 //!   projection pays `fee_token = token` to `fee_recipient` and targets the
@@ -66,14 +71,23 @@ pub(crate) const TOKEN: Symbol = symbol_short!("token");
 pub(crate) const FEE_RECIPIENT: Symbol = symbol_short!("recipient");
 
 #[contracterror]
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
 pub enum SessionPolicyError {
+    // The constructor got empty markets or a repeated address.
     InvalidConfig = 4001,
+    // The context is not a call to an allowed contract.
     ContractNotAllowed = 4002,
+    // The function is not allowed on that contract.
     FunctionNotAllowed = 4003,
+    // A token transfer goes somewhere other than a market.
     TransferNotAllowed = 4004,
+    // A token approval names a spender other than the forwarder.
     ApproveNotAllowed = 4005,
+    // A forward's signed projection is not the pinned relayed trade.
     ForwardNotAllowed = 4006,
+    // A signer of the session rule did not sign.
+    SignerNotAuthenticated = 4007,
 }
 
 // ==========================================
@@ -154,11 +168,23 @@ impl Policy for SessionPolicyContract {
     fn enforce(
         e: &Env,
         context: Context,
-        _authenticated_signers: Vec<Signer>,
-        _context_rule: ContextRule,
+        authenticated_signers: Vec<Signer>,
+        context_rule: ContextRule,
         smart_account: Address,
     ) {
         smart_account.require_auth();
+
+        // The wallet checks a rule's signers itself only when the rule has no
+        // policies; with one, it leaves the check here. Every signer of the
+        // rule, the session key, must have signed. The wallet passes the
+        // rule's signers found in the payload, filtered from the rule's own
+        // list, so they all signed exactly when the counts match. Comparing
+        // counts keeps the check from decoding each signer.
+        if authenticated_signers.is_empty()
+            || authenticated_signers.len() != context_rule.signers.len()
+        {
+            panic_with_error!(e, SessionPolicyError::SignerNotAuthenticated);
+        }
 
         e.storage()
             .instance()

@@ -19,3 +19,5 @@ stellar-accounts = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# The regression suite in tests/ signs as a real session key.
+ed25519-dalek = "2"

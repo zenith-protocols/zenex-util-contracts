@@ -3,7 +3,7 @@ extern crate std;
 use soroban_sdk::{
     auth::{Context, ContractContext, ContractExecutable, CreateContractHostFnContext},
     testutils::{storage::Instance as _, Address as _, MuxedAddress as _},
-    vec, Address, BytesN, Env, IntoVal, MuxedAddress, String, Symbol, Val, Vec,
+    vec, Address, Bytes, BytesN, Env, IntoVal, MuxedAddress, String, Symbol, Val, Vec,
 };
 use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 
@@ -30,14 +30,20 @@ struct Setup<'a> {
     fee_recipient: Address,
 }
 
-/// A `Default` session rule with id `id`, as the frontend registers it.
+/// An ed25519 session key signer, verified by `verifier`.
+fn session_signer(e: &Env, key_byte: u8) -> Signer {
+    Signer::External(Address::generate(e), Bytes::from_array(e, &[key_byte; 32]))
+}
+
+/// A `Default` session rule with id `id`, as the frontend registers it: one
+/// session key.
 fn session_rule(e: &Env, id: u32) -> ContextRule {
     ContextRule {
         id,
         context_type: ContextRuleType::Default,
         name: String::from_str(e, "Trading Session"),
-        signers: Vec::new(e),
-        signer_ids: Vec::new(e),
+        signers: vec![e, session_signer(e, 7)],
+        signer_ids: vec![e, 1],
         policies: Vec::new(e),
         policy_ids: Vec::new(e),
         valid_until: None,
@@ -151,18 +157,36 @@ impl Setup<'_> {
         self.call(&self.forwarder, fn_name, args)
     }
 
+    /// Enforces `context` with every signer of `rule` authenticated, as the
+    /// wallet reports a correctly signed session.
     fn enforce(&self, context: &Context, rule: &ContextRule) {
-        let signers: Vec<Signer> = Vec::new(&self.e);
         self.client
-            .enforce(context, &signers, rule, &self.smart_account);
+            .enforce(context, &rule.signers, rule, &self.smart_account);
     }
 
-    /// The contract error code `enforce` fails with.
+    /// Enforces `context` with `signers` reported as authenticated.
+    fn enforce_with(&self, context: &Context, rule: &ContextRule, signers: &Vec<Signer>) {
+        self.client
+            .enforce(context, signers, rule, &self.smart_account);
+    }
+
+    /// The contract error code `enforce` fails with, every signer of `rule`
+    /// authenticated.
     fn enforce_error(&self, context: &Context, rule: &ContextRule) -> u32 {
-        let signers: Vec<Signer> = Vec::new(&self.e);
+        self.enforce_error_signed_by(context, rule, &rule.signers)
+    }
+
+    /// The contract error code `enforce` fails with when the wallet reports
+    /// `signers` as authenticated.
+    fn enforce_error_signed_by(
+        &self,
+        context: &Context,
+        rule: &ContextRule,
+        signers: &Vec<Signer>,
+    ) -> u32 {
         match self
             .client
-            .try_enforce(context, &signers, rule, &self.smart_account)
+            .try_enforce(context, signers, rule, &self.smart_account)
         {
             Err(Ok(error)) => error.get_code(),
             other => panic!("expected a contract error, got {other:?}"),
@@ -278,6 +302,72 @@ fn test_install_and_uninstall_take_empty_param_and_store_nothing() {
     s.client.uninstall(&rule, &s.smart_account);
     // Reinstalling under the same rule is fine: there is no state to clash.
     s.install(0);
+}
+
+// ==========================================
+// Enforce — Signer Tests
+// ==========================================
+
+/// The contexts of an honest trade, which the rest of the suite allows when
+/// the session key signed.
+fn honest_contexts(s: &Setup) -> [Context; 4] {
+    [
+        s.forward("forward_unsafe", "create_and_fill"),
+        s.approve(&s.forwarder, SCALAR_7),
+        s.call(&s.market, "create_order", vec![&s.e]),
+        s.transfer(s.market.into_val(&s.e), SCALAR_7),
+    ]
+}
+
+#[test]
+fn test_enforce_rejects_every_context_without_a_signature() {
+    // The wallet hands a rule with a policy to `enforce` even when no signer
+    // signed: an empty authorization must not pass.
+    let s = Setup::new();
+    let rule = s.install(0);
+    let nobody: Vec<Signer> = Vec::new(&s.e);
+    for context in honest_contexts(&s) {
+        assert_eq!(s.enforce_error_signed_by(&context, &rule, &nobody), 4007);
+    }
+}
+
+#[test]
+fn test_enforce_rejects_a_missing_rule_signer() {
+    // A rule with two signers needs both: one of them is not enough.
+    let s = Setup::new();
+    let mut rule = s.install(0);
+    rule.signers.push_back(session_signer(&s.e, 8));
+    rule.signer_ids.push_back(2);
+    let only_first: Vec<Signer> = vec![&s.e, rule.signers.get_unchecked(0)];
+    for context in honest_contexts(&s) {
+        assert_eq!(
+            s.enforce_error_signed_by(&context, &rule, &only_first),
+            4007
+        );
+        s.enforce_with(&context, &rule, &rule.signers);
+    }
+}
+
+#[test]
+fn test_enforce_rejects_a_rule_without_signers() {
+    // A rule that lists no signer can never be satisfied.
+    let s = Setup::new();
+    let mut rule = s.install(0);
+    rule.signers = Vec::new(&s.e);
+    rule.signer_ids = Vec::new(&s.e);
+    let nobody: Vec<Signer> = Vec::new(&s.e);
+    for context in honest_contexts(&s) {
+        assert_eq!(s.enforce_error_signed_by(&context, &rule, &nobody), 4007);
+    }
+}
+
+#[test]
+fn test_enforce_allows_the_honest_trade_when_signed() {
+    let s = Setup::new();
+    let rule = s.install(0);
+    for context in honest_contexts(&s) {
+        s.enforce(&context, &rule);
+    }
 }
 
 // ==========================================
@@ -501,7 +591,7 @@ fn test_enforce_allows_every_configured_market() {
     let client = SessionPolicyContractClient::new(&e, &policy);
     let smart_account = Address::generate(&e);
     let rule = session_rule(&e, 0);
-    let signers: Vec<Signer> = Vec::new(&e);
+    let signers: Vec<Signer> = rule.signers.clone();
 
     for market in [&market_a, &market_b] {
         let order = Context::Contract(ContractContext {
