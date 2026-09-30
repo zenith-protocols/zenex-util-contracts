@@ -1,4 +1,5 @@
 [toolchain]
-channel = "1.93.1"
+channel = "1.98.1"
 profile = "minimal"
 targets = ["wasm32v1-none"]
+components = ["rustfmt"]

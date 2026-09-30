@@ -1,10 +1,10 @@
-#![cfg(test)]
 extern crate std;
 
 use soroban_sdk::{
     auth::{Context, ContractContext},
-    symbol_short, testutils::Address as _, vec, Address, Env, IntoVal, String, Symbol,
-    Val, Vec,
+    symbol_short,
+    testutils::Address as _,
+    vec, Address, Env, IntoVal, String, Symbol, Val, Vec,
 };
 use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 
@@ -140,11 +140,7 @@ fn test_enforce_allows_whitelisted_contract() {
     client.install(&config, &rule, &smart_account);
 
     // Calling open_position on trading contract — should pass
-    let context = make_contract_context(
-        &trading,
-        Symbol::new(&e, "open_position"),
-        vec![&e],
-    );
+    let context = make_contract_context(&trading, Symbol::new(&e, "open_position"), vec![&e]);
     let signers: Vec<Signer> = Vec::new(&e);
 
     client.enforce(&context, &signers, &rule, &smart_account);
@@ -163,11 +159,7 @@ fn test_enforce_blocks_non_whitelisted_contract() {
 
     // Calling some random contract — should fail
     let random_contract = Address::generate(&e);
-    let context = make_contract_context(
-        &random_contract,
-        Symbol::new(&e, "steal_funds"),
-        vec![&e],
-    );
+    let context = make_contract_context(&random_contract, Symbol::new(&e, "steal_funds"), vec![&e]);
     let signers: Vec<Signer> = Vec::new(&e);
 
     client.enforce(&context, &signers, &rule, &smart_account);
@@ -273,19 +265,11 @@ fn test_separate_rules_have_separate_configs() {
     client.install(&config_1, &rule_1, &smart_account);
 
     // Rule 0 allows trading, blocks other_contract
-    let ctx_trading = make_contract_context(
-        &trading,
-        Symbol::new(&e, "open_position"),
-        vec![&e],
-    );
+    let ctx_trading = make_contract_context(&trading, Symbol::new(&e, "open_position"), vec![&e]);
     let signers: Vec<Signer> = Vec::new(&e);
     client.enforce(&ctx_trading, &signers, &rule_0, &smart_account);
 
     // Rule 1 allows other_contract
-    let ctx_other = make_contract_context(
-        &other_contract,
-        Symbol::new(&e, "do_thing"),
-        vec![&e],
-    );
+    let ctx_other = make_contract_context(&other_contract, Symbol::new(&e, "do_thing"), vec![&e]);
     client.enforce(&ctx_other, &signers, &rule_1, &smart_account);
 }

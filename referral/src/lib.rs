@@ -1,5 +1,11 @@
 #![no_std]
-//! On-chain referral attestation. See README.md.
+
+//! On-chain referral attestation. A wallet attests which wallet referred it.
+//! The contract keeps no storage and has no admin: the `Attributed` event is
+//! the record, and indexers replay it to build the referral graph.
+
+#[cfg(test)]
+mod test;
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, panic_with_error, Address, Env,
@@ -13,6 +19,9 @@ pub enum ReferralError {
 }
 
 /// Emitted on each successful attribution.
+///
+/// Topics are `("attributed", referee, referrer)`, so subscribers can filter
+/// on either side.
 #[contractevent]
 #[derive(Clone)]
 pub struct Attributed {
@@ -22,12 +31,28 @@ pub struct Attributed {
     pub referrer: Address,
 }
 
+/// Referral attestation contract. It owns nothing and stores nothing.
 #[contract]
-pub struct SorobanReferral;
+pub struct ReferralContract;
 
 #[contractimpl]
-impl SorobanReferral {
-    /// Attest that `caller` was referred by `referrer`. Errors on self-referral.
+impl ReferralContract {
+    /// Attests that `caller` was referred by `referrer` and returns
+    /// `(caller, referrer)`, which a simulation can read as a pre-flight.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - Access to the Soroban environment.
+    /// * `caller` - The referred wallet. Its authorization is required.
+    /// * `referrer` - The referring wallet.
+    ///
+    /// # Errors
+    ///
+    /// * `ReferralError::SelfReferral` - If `caller` equals `referrer`.
+    ///
+    /// # Events
+    ///
+    /// * topics - `["attributed", referee: Address, referrer: Address]`
     pub fn attribute(env: Env, caller: Address, referrer: Address) -> (Address, Address) {
         caller.require_auth();
         if caller == referrer {
@@ -43,5 +68,3 @@ impl SorobanReferral {
         (caller, referrer)
     }
 }
-
-mod test;

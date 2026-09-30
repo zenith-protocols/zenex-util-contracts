@@ -20,8 +20,8 @@
 //! The passkey's rule 1 enforces the session policy on every auth context.
 use soroban_sdk::{
     auth::{Context, ContractContext},
-    contract, contractimpl, contracttype, contracterror,
-    panic_with_error, symbol_short, Address, Env, TryFromVal, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, TryFromVal, Vec,
 };
 use stellar_accounts::{
     policies::Policy,
