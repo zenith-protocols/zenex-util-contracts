@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "fee-forwarder",
   "referral",
   "session-policy",
 ]
@@ -9,6 +10,9 @@ members = [
 version = "26.1.1"
 
 [workspace.dependencies.stellar-accounts]
+version = "0.7.2"
+
+[workspace.dependencies.stellar-fee-abstraction]
 version = "0.7.2"
 
 [profile.release]
