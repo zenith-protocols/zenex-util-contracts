@@ -1,1 +1,12 @@
-target/
+# Rust's output directory
+target
+
+test_snapshots
+
+# Local settings
+.soroban
+.stellar
+.idea
+
+.claude/
+CLAUDE.md

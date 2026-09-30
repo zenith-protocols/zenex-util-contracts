@@ -1,6 +1,8 @@
 [package]
 name = "session-policy"
 version = "0.0.0"
+authors = ["Zenith Protocols"]
+license = "AGPL-3.0"
 edition = "2021"
 publish = false
 

@@ -1,4 +1,3 @@
-#![cfg(test)]
 extern crate std;
 use super::*;
 use soroban_sdk::{
@@ -11,8 +10,8 @@ fn attribute_returns_caller_and_referrer() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register(SorobanReferral, ());
-    let client = SorobanReferralClient::new(&env, &contract_id);
+    let contract_id = env.register(ReferralContract, ());
+    let client = ReferralContractClient::new(&env, &contract_id);
 
     let caller = Address::generate(&env);
     let referrer = Address::generate(&env);
@@ -25,8 +24,8 @@ fn attribute_returns_caller_and_referrer() {
 #[test]
 fn attribute_requires_caller_auth() {
     let env = Env::default();
-    let contract_id = env.register(SorobanReferral, ());
-    let client = SorobanReferralClient::new(&env, &contract_id);
+    let contract_id = env.register(ReferralContract, ());
+    let client = ReferralContractClient::new(&env, &contract_id);
 
     let caller = Address::generate(&env);
     let referrer = Address::generate(&env);
@@ -42,8 +41,8 @@ fn attribute_requires_caller_auth() {
 fn attribute_rejects_self_referral() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(SorobanReferral, ());
-    let client = SorobanReferralClient::new(&env, &contract_id);
+    let contract_id = env.register(ReferralContract, ());
+    let client = ReferralContractClient::new(&env, &contract_id);
 
     let caller = Address::generate(&env);
 
@@ -58,8 +57,8 @@ fn attribute_rejects_self_referral() {
 fn attribute_emits_event_with_indexable_topics() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(SorobanReferral, ());
-    let client = SorobanReferralClient::new(&env, &contract_id);
+    let contract_id = env.register(ReferralContract, ());
+    let client = ReferralContractClient::new(&env, &contract_id);
 
     let caller = Address::generate(&env);
     let referrer = Address::generate(&env);
@@ -92,8 +91,8 @@ fn attribute_emits_event_with_indexable_topics() {
 fn attribute_records_required_auth_in_auths() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(SorobanReferral, ());
-    let client = SorobanReferralClient::new(&env, &contract_id);
+    let contract_id = env.register(ReferralContract, ());
+    let client = ReferralContractClient::new(&env, &contract_id);
 
     let caller = Address::generate(&env);
     let referrer = Address::generate(&env);
