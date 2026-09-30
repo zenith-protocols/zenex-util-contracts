@@ -13,7 +13,7 @@
 //! - [`FeeForwarderContract::forward`] signs `(fee_token, max_fee_amount,
 //!   expiration_ledger, fee_recipient, target_contract, target_fn,
 //!   target_args)`.
-//! - [`FeeForwarderContract::forward_unsafe`] signs the same projection
+//! - [`FeeForwarderContract::forward_dynamic`] signs the same projection
 //!   without `target_args`, so a relayer can refresh them after signing, such
 //!   as a fresh price update.
 //!
@@ -60,7 +60,7 @@
 //! [OpenZeppelin/stellar-contracts#873]:
 //!     https://github.com/OpenZeppelin/stellar-contracts/pull/873
 //!
-//! # `forward_unsafe`
+//! # `forward_dynamic`
 //!
 //! Unsigned `target_args` bind nothing at the root. The target flow must
 //! protect the user's intent itself: every call that moves the user's funds
@@ -188,7 +188,7 @@ impl FeeForwarderContract {
     /// * The target flow must require the user's own authorization on every
     ///   call that moves the user's funds. Otherwise a relayer can supply
     ///   arbitrary `target_args` and still collect the fee.
-    pub fn forward_unsafe(
+    pub fn forward_dynamic(
         e: Env,
         fee_token: Address,
         fee_amount: i128,

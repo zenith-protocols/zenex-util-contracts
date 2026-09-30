@@ -866,7 +866,7 @@ fn fill_target_args(e: &Env, calls: &Vec<Call>, user: &Address, keeper: &Address
 // tree is the forwarder root with its projection, the fee approval, and the
 // market's create_order with its escrow transfer; the router is not in it.
 #[test]
-fn forward_unsafe_through_router_fills_on_the_market() {
+fn forward_dynamic_through_router_fills_on_the_market() {
     let setup = flow_setup(flow_config());
     let e = &setup.e;
     let forwarder_id = e.register(fee_forwarder::FeeForwarderContract, ());
@@ -883,7 +883,7 @@ fn forward_unsafe_through_router_fills_on_the_market() {
         0,
     );
 
-    let result = forwarder.forward_unsafe(
+    let result = forwarder.forward_dynamic(
         &setup.token,
         &FORWARD_FEE,
         &FORWARD_MAX_FEE,
@@ -895,7 +895,7 @@ fn forward_unsafe_through_router_fills_on_the_market() {
         &fee_recipient,
     );
 
-    // The user's tree, recorded for the forward_unsafe call.
+    // The user's tree, recorded for the forward_dynamic call.
     let auths = e.auths();
     assert_eq!(auths.len(), 1);
     let (signer, root) = &auths[0];
@@ -904,7 +904,7 @@ fn forward_unsafe_through_router_fills_on_the_market() {
         panic!("the root must be a contract call");
     };
     assert_eq!(root_contract, &forwarder_id);
-    assert_eq!(root_fn, &Symbol::new(e, "forward_unsafe"));
+    assert_eq!(root_fn, &Symbol::new(e, "forward_dynamic"));
     assert_eq!(
         root_args,
         &vec![
@@ -963,7 +963,7 @@ fn forward_unsafe_through_router_fills_on_the_market() {
 // the fee: the fee collection lands before the router runs, and the isolated
 // fill only reports its failure.
 #[test]
-fn forward_unsafe_through_router_try_fill_rests_and_keeps_the_fee() {
+fn forward_dynamic_through_router_try_fill_rests_and_keeps_the_fee() {
     let setup = flow_setup(flow_config());
     let e = &setup.e;
     let forwarder_id = e.register(fee_forwarder::FeeForwarderContract, ());
@@ -980,7 +980,7 @@ fn forward_unsafe_through_router_try_fill_rests_and_keeps_the_fee() {
         9 * PRICE_SCALAR,
     );
 
-    let result = forwarder.forward_unsafe(
+    let result = forwarder.forward_dynamic(
         &setup.token,
         &FORWARD_FEE,
         &FORWARD_MAX_FEE,

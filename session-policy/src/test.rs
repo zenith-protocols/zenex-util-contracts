@@ -312,7 +312,7 @@ fn test_install_and_uninstall_take_empty_param_and_store_nothing() {
 /// the session key signed.
 fn honest_contexts(s: &Setup) -> [Context; 4] {
     [
-        s.forward("forward_unsafe", "create_and_fill"),
+        s.forward("forward_dynamic", "create_and_fill"),
         s.approve(&s.forwarder, SCALAR_7),
         s.call(&s.market, "create_order", vec![&s.e]),
         s.transfer(s.market.into_val(&s.e), SCALAR_7),
@@ -379,7 +379,7 @@ fn test_enforce_allows_pinned_forwards_to_every_router_target() {
     let s = Setup::new();
     let rule = s.install(0);
 
-    for fn_name in ["forward", "forward_unsafe"] {
+    for fn_name in ["forward", "forward_dynamic"] {
         for target_fn in ["multicall", "create_and_fill", "create_and_try_fill"] {
             s.enforce(&s.forward(fn_name, target_fn), &rule);
         }
@@ -391,7 +391,7 @@ fn test_enforce_blocks_other_forwarder_functions() {
     let s = Setup::new();
     let rule = s.install(0);
     let args = s.projection(
-        "forward_unsafe",
+        "forward_dynamic",
         &s.token,
         &s.fee_recipient,
         &s.router,
@@ -413,7 +413,7 @@ fn test_enforce_blocks_a_forward_paying_another_recipient() {
     let rule = s.install(0);
     let attacker = Address::generate(&s.e);
 
-    for fn_name in ["forward", "forward_unsafe"] {
+    for fn_name in ["forward", "forward_dynamic"] {
         let args = s.projection(fn_name, &s.token, &attacker, &s.router, "create_and_fill");
         assert_eq!(
             s.enforce_error(&s.call(&s.forwarder, fn_name, args), &rule),
@@ -430,14 +430,14 @@ fn test_enforce_blocks_a_forward_in_another_fee_token() {
     let other_token = Address::generate(&s.e);
 
     let args = s.projection(
-        "forward_unsafe",
+        "forward_dynamic",
         &other_token,
         &s.fee_recipient,
         &s.router,
         "create_and_fill",
     );
     assert_eq!(
-        s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", args), &rule),
+        s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", args), &rule),
         4006
     );
 }
@@ -451,14 +451,14 @@ fn test_enforce_blocks_a_forward_to_another_target() {
     // and any other contract.
     for target in [s.token.clone(), s.market.clone(), Address::generate(&s.e)] {
         let args = s.projection(
-            "forward_unsafe",
+            "forward_dynamic",
             &s.token,
             &s.fee_recipient,
             &target,
             "create_and_fill",
         );
         assert_eq!(
-            s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", args), &rule),
+            s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", args), &rule),
             4006
         );
     }
@@ -476,14 +476,14 @@ fn test_enforce_blocks_a_forward_to_another_router_function() {
         "transfer_from",
     ] {
         let args = s.projection(
-            "forward_unsafe",
+            "forward_dynamic",
             &s.token,
             &s.fee_recipient,
             &s.router,
             target_fn,
         );
         assert_eq!(
-            s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", args), &rule),
+            s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", args), &rule),
             4006,
             "{target_fn}"
         );
@@ -496,9 +496,9 @@ fn test_enforce_blocks_a_malformed_projection() {
     let rule = s.install(0);
     let e = &s.e;
 
-    // `forward` without `target_args`, and `forward_unsafe` with them.
+    // `forward` without `target_args`, and `forward_dynamic` with them.
     let short = s.projection(
-        "forward_unsafe",
+        "forward_dynamic",
         &s.token,
         &s.fee_recipient,
         &s.router,
@@ -516,14 +516,14 @@ fn test_enforce_blocks_a_malformed_projection() {
         "multicall",
     );
     assert_eq!(
-        s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", long), &rule),
+        s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", long), &rule),
         4006
     );
 
     // A recipient that is not an address, and a target function that is not
     // a symbol.
     let mut bad_recipient = s.projection(
-        "forward_unsafe",
+        "forward_dynamic",
         &s.token,
         &s.fee_recipient,
         &s.router,
@@ -532,13 +532,13 @@ fn test_enforce_blocks_a_malformed_projection() {
     bad_recipient.set(3, 7i128.into_val(e));
     assert_eq!(
         s.enforce_error(
-            &s.call(&s.forwarder, "forward_unsafe", bad_recipient),
+            &s.call(&s.forwarder, "forward_dynamic", bad_recipient),
             &rule
         ),
         4006
     );
     let mut bad_target_fn = s.projection(
-        "forward_unsafe",
+        "forward_dynamic",
         &s.token,
         &s.fee_recipient,
         &s.router,
@@ -547,13 +547,13 @@ fn test_enforce_blocks_a_malformed_projection() {
     bad_target_fn.set(5, String::from_str(e, "create_and_fill").into_val(e));
     assert_eq!(
         s.enforce_error(
-            &s.call(&s.forwarder, "forward_unsafe", bad_target_fn),
+            &s.call(&s.forwarder, "forward_dynamic", bad_target_fn),
             &rule
         ),
         4006
     );
     assert_eq!(
-        s.enforce_error(&s.call(&s.forwarder, "forward_unsafe", vec![e]), &rule),
+        s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", vec![e]), &rule),
         4006
     );
 }

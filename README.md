@@ -15,8 +15,9 @@ The market router is ported here from zenex-contracts without its fee functions.
 | `referral` | Referral attestation: a wallet attests which wallet referred it |
 | `session-policy` | Smart-account policy for trading session keys: trade-only, relay fees only through the fee forwarder to a pinned recipient |
 
-This source is session-policy v4; the testnet instance runs its previous build (see Deployment). It
-needs review before any mainnet deploy. The workspace depends on OpenZeppelin stellar-contracts at
+This source is session-policy v4; the testnet instance runs its previous build, which lacks the
+signer check and so accepts an authorization with no signature (see Session policy and Deployment).
+It needs review before any mainnet deploy. The workspace depends on OpenZeppelin stellar-contracts at
 an UNRELEASED, UNAUDITED commit (`df602b6`, the head of their `v0.9.0` branch) and builds with
 soroban-sdk 27.0.6; see the fee forwarder below. The older testnet address below runs v1, whose
 transfer-destination guard is bypassable (unrestricted `approve`, muxed `to` addresses, the
@@ -39,9 +40,15 @@ and then call `target_contract.target_fn(target_args)` and return its result.
 
 - `forward` binds `user` to `(fee_token, max_fee_amount, expiration_ledger, fee_recipient,
   target_contract, target_fn, target_args)` with `require_auth_for_args`.
-- `forward_unsafe` binds the same projection without `target_args`, so the relayer can refresh them
-  after signing (a fresh price). The target flow must require the user's own authorization on every
-  call that moves the user's funds; a Zenex `create_order` does.
+- `forward_dynamic` binds the same projection without `target_args`, so the relayer can refresh
+  them after signing (a fresh price). The target flow must require the user's own authorization on
+  every call that moves the user's funds; a Zenex `create_order` does.
+
+`forward_dynamic` was called `forward_unsafe` until it was renamed for how it reads in a signing
+prompt; the signed projection is unchanged. The testnet deployments below, and the transactions
+recorded against them, still expose and use `forward_unsafe` until they are redeployed.
+relayer-plugin-zenex PR #25 and zenex-trade PR #79 still use the old name and need the same rename
+when they are next touched.
 
 `fee_amount` is the relayer's, at most the cap and above zero. Unlike OpenZeppelin's example, the
 user signs `fee_recipient` (index 3 of both projections), so a signature pays only the recipient it
@@ -94,7 +101,9 @@ InvalidAction)` and v4's 4006 in the event log.
 ### Market router
 
 Ported from zenex-contracts `market-router` at `c93bc95` (unchanged since the mainnet release
-`644a4c4`) with the three `*_with_fee` functions removed. It keeps `multicall`, `multicall_try`,
+`644a4c4`) with the three `*_with_fee` functions removed. zenex-contracts is private, so those
+commits cannot be checked from here; the market WASM the tests use can be checked on chain by its
+hash. It keeps `multicall`, `multicall_try`,
 `create_and_fill` and `create_and_try_fill`; their names, arguments, return shapes and the `Call`
 type match the deployed router's spec exactly. It holds no funds and collects no fees: the fee
 forwarder collects them and calls these functions as its target. Its tests run against the release
@@ -133,7 +142,7 @@ pass. `session-policy/tests/signers.rs` runs that attack against the real canoni
 ed25519 verifier WASMs in `session-policy/testdata/`. With the session key's signature, the key may
 sign:
 
-- `forward` / `forward_unsafe` on the forwarder, when the signed projection
+- `forward` / `forward_dynamic` on the forwarder, when the signed projection
   `[fee_token, max_fee_amount, expiration_ledger, fee_recipient, target_contract, target_fn(, target_args)]`
   pays the token to the pinned recipient and targets the router's `multicall`, `create_and_fill` or
   `create_and_try_fill`;
@@ -245,9 +254,10 @@ this workspace yet.
 
 The session-policy v4 row and the fee forwarder are built from this workspace on OpenZeppelin
 `df602b6` and soroban-sdk 27.0.6 (commit 1b037f0), the market router from commit f2bd687. The
-session-policy source has since moved its configuration to per-value instance keys and dropped
-`get_config`, with the same constructor and `enforce` rules, so it no longer builds the deployed v4
-WASM. v4 is deployed with the forwarder `CBWLTLD5…E6C2`, the ported router `CAZFL7XZ…5EAW`, the market
+session-policy source has since moved its configuration to per-value instance keys, dropped
+`get_config` and added the signer check, and the fee forwarder source renamed `forward_unsafe` to
+`forward_dynamic` and shortened a doc, so neither builds its deployed WASM any more. The deployed v4
+lacks the signer check: redeploy it before relying on it. v4 is deployed with the forwarder `CBWLTLD5…E6C2`, the ported router `CAZFL7XZ…5EAW`, the market
 `CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee recipient `GBIBH5UV…MIKE4`. Superseded testnet
 deployments: the v4 instance `CBHJ72ERR2FOSCXIKQ5ZPEZVSJZID7QZAKOTXYNGXUI3EEWRQCRYNCCU` (same wasm),
 pinned to the zenex-contracts router `CAZ4DNYW…REIY4`; the fee forwarder
@@ -258,10 +268,8 @@ upstream Eager collection on soroban-sdk 26) with its v4 instance
 `CAIH4U3LUAP2HBHVGLG5F2BPMPOOX2IG56OJMBIDU35MFRUVPNAIGUG4`, and the typed predecessor
 `CDRHA53H3U35NVQ3PHTUONMG7NSQFFRCQL5QBGTFGTZE5I2735KDLOHR` (wasm `6d4c3791…f956`), a fee layer
 fixed to the market router. The session-policy
-v1 and referral testnet contracts were built from the legacy local sources
-(`soroban-smart-account/session-policy` @ 9cded45 and `soroban-referral`), which reproduce the
-deployed wasm byte-for-byte with rustc 1.93.1, stellar CLI 25.2.0 and their original lockfiles.
-This workspace builds with soroban-sdk 27 and one shared lockfile, so its output does not match
-those hashes. `attribute` keeps its arguments, but v1 returns `(caller, referrer)` and fails
-with 1; session-policy v4 replaces v1's interface with a constructor configuration, an empty install
-parameter and new error codes.
+v1 and referral testnet contracts predate this workspace; their sources were imported in commit
+`20719fe`, which is the source of record for them here. This workspace builds with soroban-sdk 27
+and one shared lockfile, so its output does not match those deployed hashes. `attribute` keeps its
+arguments, but v1 returns `(caller, referrer)` and fails with 1; session-policy v4 replaces v1's
+interface with a constructor configuration, an empty install parameter and new error codes.

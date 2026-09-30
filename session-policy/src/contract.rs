@@ -16,7 +16,7 @@
 //! with no signature at all would pass. Given the signature, the policy lets
 //! through only:
 //!
-//! - `forward` / `forward_unsafe` on the forwarder, when the signed
+//! - `forward` / `forward_dynamic` on the forwarder, when the signed
 //!   projection pays `fee_token = token` to `fee_recipient` and targets the
 //!   router's `multicall`, `create_and_fill` or `create_and_try_fill`;
 //! - `create_order`, `cancel_order` and `claim_credit` on the markets;
@@ -208,7 +208,7 @@ impl Policy for SessionPolicyContract {
             // projection, not the full call.
             let len = if fn_name == symbol_short!("forward") {
                 PROJECTION_LEN_SAFE
-            } else if fn_name == Symbol::new(e, "forward_unsafe") {
+            } else if fn_name == Symbol::new(e, "forward_dynamic") {
                 PROJECTION_LEN_UNSAFE
             } else {
                 panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);

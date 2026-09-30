@@ -251,7 +251,7 @@ impl World {
             .into_val(&self.e)
     }
 
-    /// The projection `forward_unsafe` signs.
+    /// The projection `forward_dynamic` signs.
     fn unsafe_projection(&self, target: &Address, target_fn: &str) -> Vec<Val> {
         (
             self.usdc.address.clone(),
@@ -322,7 +322,7 @@ impl World {
                 &self.user,
                 recipient,
             ),
-            _ => self.forwarder.forward_unsafe(
+            _ => self.forwarder.forward_dynamic(
                 &self.usdc.address,
                 &FEE,
                 &MAX_FEE,
@@ -400,11 +400,11 @@ fn forward_collects_the_fee_refunds_the_rest_and_calls_the_target() {
 }
 
 #[test]
-fn forward_unsafe_collects_the_fee_and_consumes_the_allowance() {
+fn forward_dynamic_collects_the_fee_and_consumes_the_allowance() {
     let w = setup();
-    w.sign("forward_unsafe", w.unsafe_projection(&w.probe, "probe"));
+    w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
 
-    let seen = w.forward_probe("forward_unsafe", 1, &w.recipient);
+    let seen = w.forward_probe("forward_dynamic", 1, &w.recipient);
 
     assert_eq!(seen, 0);
     assert_eq!(w.allowance(), 0);
@@ -481,7 +481,7 @@ fn the_forwarder_cannot_be_the_recipient() {
     let args = w.probe_args(1);
     w.e.mock_all_auths();
 
-    let result = w.forwarder.try_forward_unsafe(
+    let result = w.forwarder.try_forward_dynamic(
         &w.usdc.address,
         &FEE,
         &MAX_FEE,
@@ -554,7 +554,7 @@ fn a_zero_fee_is_rejected() {
     let args = w.probe_args(1);
     w.e.mock_all_auths();
 
-    let result = w.forwarder.try_forward_unsafe(
+    let result = w.forwarder.try_forward_dynamic(
         &w.usdc.address,
         &0,
         &MAX_FEE,
@@ -594,19 +594,19 @@ fn forward_signs_the_target_args() {
 }
 
 #[test]
-fn forward_unsafe_leaves_the_target_args_to_the_relayer() {
+fn forward_dynamic_leaves_the_target_args_to_the_relayer() {
     let w = setup();
-    w.sign("forward_unsafe", w.unsafe_projection(&w.probe, "probe"));
+    w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
 
     // The relayer refreshes the args after signing, like a price update.
-    w.forward_probe("forward_unsafe", 7, &w.recipient);
+    w.forward_probe("forward_dynamic", 7, &w.recipient);
 
     assert_eq!(w.last_tag(), 7);
     assert_eq!(w.usdc.balance(&w.recipient), FEE);
 }
 
 #[test]
-fn forward_unsafe_cannot_change_a_user_authorized_call() {
+fn forward_dynamic_cannot_change_a_user_authorized_call() {
     // The target's own `require_auth` pins its exact arguments inside the
     // signed tree, whatever the relayer puts in `target_args`.
     let w = setup();
@@ -618,7 +618,7 @@ fn forward_unsafe_cannot_change_a_user_authorized_call() {
             address: &w.user,
             invoke: &MockAuthInvoke {
                 contract: &w.forwarder.address,
-                fn_name: "forward_unsafe",
+                fn_name: "forward_dynamic",
                 args: w.unsafe_projection(&w.probe, "act"),
                 sub_invokes: &[
                     MockAuthInvoke {
@@ -638,7 +638,7 @@ fn forward_unsafe_cannot_change_a_user_authorized_call() {
         }]);
     };
     let act = |tag: u32| {
-        w.forwarder.forward_unsafe(
+        w.forwarder.forward_dynamic(
             &w.usdc.address,
             &FEE,
             &MAX_FEE,
@@ -670,26 +670,26 @@ fn changing_the_recipient_after_signing_breaks_auth() {
         w.forward_probe("forward", 1, &other);
     });
 
-    w.sign("forward_unsafe", w.unsafe_projection(&w.probe, "probe"));
+    w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
     assert_auth_failure(|| {
-        w.forward_probe("forward_unsafe", 1, &other);
+        w.forward_probe("forward_dynamic", 1, &other);
     });
 
     // The signed recipient is paid.
-    w.sign("forward_unsafe", w.unsafe_projection(&w.probe, "probe"));
-    w.forward_probe("forward_unsafe", 1, &w.recipient);
+    w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
+    w.forward_probe("forward_dynamic", 1, &w.recipient);
     assert_eq!(w.usdc.balance(&w.recipient), FEE);
     assert_eq!(w.usdc.balance(&other), 0);
 }
 
 #[test]
-fn forward_unsafe_binds_every_other_projected_value() {
+fn forward_dynamic_binds_every_other_projected_value() {
     let w = setup();
     let e = &w.e;
     let args = w.probe_args(1);
     let submit =
         |fee_token: &Address, max_fee: i128, expiration: u32, target: &Address, func: &str| {
-            w.forwarder.forward_unsafe(
+            w.forwarder.forward_dynamic(
                 fee_token,
                 &FEE,
                 &max_fee,
@@ -706,7 +706,7 @@ fn forward_unsafe_binds_every_other_projected_value() {
     let other_probe = e.register(MockProbe, ());
 
     for tamper in 0..5 {
-        w.sign("forward_unsafe", w.unsafe_projection(&w.probe, "probe"));
+        w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
         assert_auth_failure(|| match tamper {
             0 => submit(&other_token, MAX_FEE, EXPIRATION, &w.probe, "probe"),
             1 => submit(&w.usdc.address, MAX_FEE + 1, EXPIRATION, &w.probe, "probe"),
@@ -752,7 +752,7 @@ fn the_recorded_tree_is_the_forwarder_root_without_the_router() {
         .into_val(e);
     e.mock_all_auths();
 
-    w.forwarder.forward_unsafe(
+    w.forwarder.forward_dynamic(
         &w.usdc.address,
         &FEE,
         &MAX_FEE,
@@ -771,7 +771,7 @@ fn the_recorded_tree_is_the_forwarder_root_without_the_router() {
     let expected = AuthorizedInvocation {
         function: AuthorizedFunction::Contract((
             w.forwarder.address.clone(),
-            Symbol::new(e, "forward_unsafe"),
+            Symbol::new(e, "forward_dynamic"),
             w.unsafe_projection(&router, "create_and_fill"),
         )),
         sub_invocations: std::vec![
@@ -843,7 +843,7 @@ fn transfer_from_and_burn_from_are_refused_on_any_contract() {
             refused.err().unwrap().unwrap(),
             contract_error(TARGET_NOT_ALLOWED)
         );
-        let refused = w.forwarder.try_forward_unsafe(
+        let refused = w.forwarder.try_forward_dynamic(
             &w.usdc.address,
             &FEE,
             &MAX_FEE,
@@ -882,7 +882,7 @@ fn a_cross_token_drain_is_refused() {
         BALANCE,
     )
         .into_val(e);
-    let refused = w.forwarder.try_forward_unsafe(
+    let refused = w.forwarder.try_forward_dynamic(
         &token_a.address,
         &FEE,
         &MAX_FEE,
@@ -927,7 +927,7 @@ fn a_standalone_approve_cannot_be_spent_through_a_forward() {
         } else {
             (w.forwarder.address.clone(), victim.clone(), BALANCE).into_val(e)
         };
-        let refused = w.forwarder.try_forward_unsafe(
+        let refused = w.forwarder.try_forward_dynamic(
             &w.usdc.address,
             &FEE,
             &MAX_FEE,
