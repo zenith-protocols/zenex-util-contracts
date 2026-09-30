@@ -2,12 +2,15 @@ extern crate std;
 
 use soroban_sdk::{
     auth::{Context, ContractContext, ContractExecutable, CreateContractHostFnContext},
-    testutils::{Address as _, MuxedAddress as _},
+    testutils::{storage::Instance as _, Address as _, MuxedAddress as _},
     vec, Address, BytesN, Env, IntoVal, MuxedAddress, String, Symbol, Val, Vec,
 };
 use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 
-use crate::contract::{Config, SessionPolicyContract, SessionPolicyContractClient};
+use crate::contract::{
+    SessionPolicyContract, SessionPolicyContractClient, FEE_RECIPIENT, FORWARDER, MARKETS, ROUTER,
+    TOKEN,
+};
 
 const SCALAR_7: i128 = 10_000_000; // one token unit at 7 decimals
 const BALANCE: i128 = 1_000 * SCALAR_7; // the wallet's $1,000
@@ -172,18 +175,18 @@ impl Setup<'_> {
 // ==========================================
 
 #[test]
-fn test_constructor_stores_config() {
+fn test_constructor_stores_one_instance_entry_per_value() {
     let s = Setup::new();
-    assert_eq!(
-        s.client.get_config(),
-        Config {
-            forwarder: s.forwarder.clone(),
-            router: s.router.clone(),
-            markets: vec![&s.e, s.market.clone()],
-            token: s.token.clone(),
-            fee_recipient: s.fee_recipient.clone(),
-        }
-    );
+    let e = &s.e;
+    e.as_contract(&s.client.address, || {
+        let instance = e.storage().instance();
+        assert_eq!(instance.all().len(), 5, "five entries and nothing else");
+        assert_eq!(instance.get(&FORWARDER), Some(s.forwarder.clone()));
+        assert_eq!(instance.get(&ROUTER), Some(s.router.clone()));
+        assert_eq!(instance.get(&MARKETS), Some(vec![e, s.market.clone()]));
+        assert_eq!(instance.get(&TOKEN), Some(s.token.clone()));
+        assert_eq!(instance.get(&FEE_RECIPIENT), Some(s.fee_recipient.clone()));
+    });
 }
 
 /// Registers the policy with the given constructor arguments.

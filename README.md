@@ -15,12 +15,12 @@ The market router is ported here from zenex-contracts without its fee functions.
 | `referral` | Referral attestation: a wallet attests which wallet referred it |
 | `session-policy` | Smart-account policy for trading session keys: trade-only, relay fees only through the fee forwarder to a pinned recipient |
 
-This source is session-policy v4, deployed on testnet for review; it needs review before any mainnet
-deploy. The workspace depends on OpenZeppelin stellar-contracts at an UNRELEASED, UNAUDITED commit
-(`df602b6`, the head of their `v0.9.0` branch) and builds with soroban-sdk 27.0.6; see the fee
-forwarder below. The older testnet address below runs v1, whose transfer-destination guard is bypassable
-(unrestricted `approve`, muxed `to` addresses, the router's fee envelope), and whose error codes
-differ from v4's.
+This source is session-policy v4; the testnet instance runs its previous build (see Deployment). It
+needs review before any mainnet deploy. The workspace depends on OpenZeppelin stellar-contracts at
+an UNRELEASED, UNAUDITED commit (`df602b6`, the head of their `v0.9.0` branch) and builds with
+soroban-sdk 27.0.6; see the fee forwarder below. The older testnet address below runs v1, whose
+transfer-destination guard is bypassable (unrestricted `approve`, muxed `to` addresses, the
+router's fee envelope), and whose error codes differ from v4's.
 
 ### Referral
 
@@ -122,8 +122,8 @@ over the same relay stack:
 
 A trading session key is an ed25519 key registered on the smart account under a `Default` context
 rule with a `valid_until`. The constructor fixes the fee forwarder, the router, the markets, the
-collateral token and the fee recipient; there is no admin and no storage, and a rule installs the
-policy with an empty parameter. The key may sign:
+collateral token and the fee recipient, one instance-storage entry each; there is no admin and no
+per-account state, and a rule installs the policy with an empty parameter. The key may sign:
 
 - `forward` / `forward_unsafe` on the forwarder, when the signed projection
   `[fee_token, max_fee_amount, expiration_ledger, fee_recipient, target_contract, target_fn(, target_args)]`
@@ -137,7 +137,12 @@ Everything else fails closed (`ContractNotAllowed` 4002, `FunctionNotAllowed` 40
 `TransferNotAllowed` 4004, `ApproveNotAllowed` 4005, `ForwardNotAllowed` 4006): the wallet itself,
 the router directly, the vault, other tokens, muxed or non-market destinations, and contract
 creation. A rejected context shows as `Error(Auth, InvalidAction)`, with the policy's code in the
-diagnostic event log. `get_config()` returns the deploy-time configuration.
+diagnostic event log.
+
+The configuration sits under the instance keys `forwarder`, `router`, `markets`, `token` and
+`recipient`, and `enforce` reads only the entries its branch checks. There is no getter, because
+every `enforce` instantiates the whole module and pays for each export: `stellar contract read --id
+<policy>` prints the instance entry.
 
 A forwarder allowance needs no cap: the forwarder refuses `transfer_from` and `burn_from` targets,
 so only its own fee step can spend it, under the wallet's root authorization, paying the recipient
@@ -230,8 +235,10 @@ this workspace yet.
 | fee-forwarder | CBWLTLD5JJGAVSR2KH3UY42WXH3YYORZW54TA74EIGOPWA74LJGYE6C2 | c7dd9bae43bea382e4890a86c9d41153607fe9ac465a207dccfd2d0b66c0d2ba |
 
 The session-policy v4 row and the fee forwarder are built from this workspace on OpenZeppelin
-`df602b6` and soroban-sdk 27.0.6 (commit 1b037f0), the market router from commit f2bd687. v4 is
-deployed with the forwarder `CBWLTLD5…E6C2`, the ported router `CAZFL7XZ…5EAW`, the market
+`df602b6` and soroban-sdk 27.0.6 (commit 1b037f0), the market router from commit f2bd687. The
+session-policy source has since moved its configuration to per-value instance keys and dropped
+`get_config`, with the same constructor and `enforce` rules, so it no longer builds the deployed v4
+WASM. v4 is deployed with the forwarder `CBWLTLD5…E6C2`, the ported router `CAZFL7XZ…5EAW`, the market
 `CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee recipient `GBIBH5UV…MIKE4`. Superseded testnet
 deployments: the v4 instance `CBHJ72ERR2FOSCXIKQ5ZPEZVSJZID7QZAKOTXYNGXUI3EEWRQCRYNCCU` (same wasm),
 pinned to the zenex-contracts router `CAZ4DNYW…REIY4`; the fee forwarder

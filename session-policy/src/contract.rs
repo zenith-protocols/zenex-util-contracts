@@ -7,9 +7,9 @@
 //! signs.
 //!
 //! The fee forwarder, the router, the markets, the collateral token and the
-//! fee recipient are fixed at deploy. There is no admin and no storage: a
-//! rule installs the policy with an empty parameter. The policy lets through
-//! only:
+//! fee recipient are fixed at deploy, one instance-storage entry each. There
+//! is no admin and no per-account state: a rule installs the policy with an
+//! empty parameter. The policy lets through only:
 //!
 //! - `forward` / `forward_unsafe` on the forwarder, when the signed
 //!   projection pays `fee_token = token` to `fee_recipient` and targets the
@@ -38,8 +38,8 @@
 //! `fee_recipient` in the signed projection, which this policy pins.
 use soroban_sdk::{
     auth::{Context, ContractContext},
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Env, Symbol, TryFromVal, Val, Vec,
+    contract, contracterror, contractimpl, panic_with_error, symbol_short, Address, Env, Symbol,
+    TryFromVal, Val, Vec,
 };
 use stellar_accounts::{
     policies::Policy,
@@ -47,28 +47,23 @@ use stellar_accounts::{
 };
 
 // ==========================================
-// Types
+// Storage
 // ==========================================
 
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct Config {
-    /// The fee forwarder the key's relayed trades go through.
-    pub forwarder: Address,
-    /// The router the forwarder may target.
-    pub router: Address,
-    /// The markets the key may trade on.
-    pub markets: Vec<Address>,
-    /// The collateral token, which is also the fee token.
-    pub token: Address,
-    /// The only account relay fees may go to.
-    pub fee_recipient: Address,
-}
+// The configuration sits in instance storage, one entry per value, so each
+// `enforce` branch reads only the values it checks. The keys are short
+// symbols, which are constants: building one costs no host call.
 
-#[contracttype]
-enum StorageKey {
-    Config,
-}
+/// The fee forwarder the key's relayed trades go through: an `Address`.
+pub(crate) const FORWARDER: Symbol = symbol_short!("forwarder");
+/// The router the forwarder may target: an `Address`.
+pub(crate) const ROUTER: Symbol = symbol_short!("router");
+/// The markets the key may trade on: a `Vec<Address>`.
+pub(crate) const MARKETS: Symbol = symbol_short!("markets");
+/// The collateral token, which is also the fee token: an `Address`.
+pub(crate) const TOKEN: Symbol = symbol_short!("token");
+/// The only account relay fees may go to: an `Address`.
+pub(crate) const FEE_RECIPIENT: Symbol = symbol_short!("recipient");
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -143,21 +138,12 @@ impl SessionPolicyContract {
         if markets.is_empty() {
             panic_with_error!(&e, SessionPolicyError::InvalidConfig);
         }
-        e.storage().instance().set(
-            &StorageKey::Config,
-            &Config {
-                forwarder,
-                router,
-                markets,
-                token,
-                fee_recipient,
-            },
-        );
-    }
-
-    /// Returns the configuration fixed at deploy.
-    pub fn get_config(e: Env) -> Config {
-        read_config(&e)
+        let instance = e.storage().instance();
+        instance.set(&FORWARDER, &forwarder);
+        instance.set(&ROUTER, &router);
+        instance.set(&MARKETS, &markets);
+        instance.set(&TOKEN, &token);
+        instance.set(&FEE_RECIPIENT, &fee_recipient);
     }
 }
 
@@ -174,7 +160,6 @@ impl Policy for SessionPolicyContract {
     ) {
         smart_account.require_auth();
 
-        let config = read_config(e);
         e.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD, EXTEND_AMOUNT);
@@ -189,7 +174,10 @@ impl Policy for SessionPolicyContract {
             panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
         };
 
-        if contract == config.forwarder {
+        // The constructor makes every configured address distinct, so at
+        // most one branch matches. Each reads only the values it checks.
+        let forwarder: Address = read(e, &FORWARDER);
+        if contract == forwarder {
             // The root of a relayed trade. Its args are the signed
             // projection, not the full call.
             let len = if fn_name == symbol_short!("forward") {
@@ -203,29 +191,33 @@ impl Policy for SessionPolicyContract {
                 .get(PROJECTION_TARGET_FN)
                 .and_then(|val| Symbol::try_from_val(e, &val).ok());
             if args.len() != len
-                || address_arg(e, &args, PROJECTION_FEE_TOKEN) != Some(config.token)
-                || address_arg(e, &args, PROJECTION_FEE_RECIPIENT) != Some(config.fee_recipient)
-                || address_arg(e, &args, PROJECTION_TARGET_CONTRACT) != Some(config.router)
+                || address_arg(e, &args, PROJECTION_FEE_TOKEN) != Some(read(e, &TOKEN))
+                || address_arg(e, &args, PROJECTION_FEE_RECIPIENT) != Some(read(e, &FEE_RECIPIENT))
+                || address_arg(e, &args, PROJECTION_TARGET_CONTRACT) != Some(read(e, &ROUTER))
                 || !target_fn.is_some_and(|name| is_one_of(e, &name, &ROUTER_TARGETS))
             {
                 panic_with_error!(e, SessionPolicyError::ForwardNotAllowed);
             }
-        } else if config.markets.contains(&contract) {
+            return;
+        }
+
+        let markets: Vec<Address> = read(e, &MARKETS);
+        if markets.contains(&contract) {
             if !is_one_of(e, &fn_name, &MARKET_FUNCTIONS) {
                 panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
             }
-        } else if contract == config.token {
+        } else if contract == read::<Address>(e, &TOKEN) {
             if fn_name == symbol_short!("transfer") {
                 // `transfer(from, to, amount)`: only the order escrow into a
                 // market. A muxed `to` does not decode as an address, so it
                 // fails here too.
-                if !address_arg(e, &args, 1).is_some_and(|to| config.markets.contains(&to)) {
+                if !address_arg(e, &args, 1).is_some_and(|to| markets.contains(&to)) {
                     panic_with_error!(e, SessionPolicyError::TransferNotAllowed);
                 }
             } else if fn_name == symbol_short!("approve") {
                 // `approve(from, spender, amount, expiration_ledger)`: only the
                 // forwarder's fee allowance, at any amount.
-                if address_arg(e, &args, 1) != Some(config.forwarder) {
+                if address_arg(e, &args, 1) != Some(forwarder) {
                     panic_with_error!(e, SessionPolicyError::ApproveNotAllowed);
                 }
             } else {
@@ -255,10 +247,12 @@ impl Policy for SessionPolicyContract {
 // Helpers
 // ==========================================
 
-fn read_config(e: &Env) -> Config {
+/// Reads the configured value under `key`. The constructor sets every key,
+/// so a deployed policy never misses one.
+fn read<V: TryFromVal<Env, Val>>(e: &Env, key: &Symbol) -> V {
     e.storage()
         .instance()
-        .get(&StorageKey::Config)
+        .get(key)
         .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::InvalidConfig))
 }
 
