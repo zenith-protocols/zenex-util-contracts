@@ -18,7 +18,8 @@ features = ["experimental_spec_shaking_v2"]
 # `v0.9.0` branch. It carries OZ PR #873 (issue #875), whose Eager fee
 # collection consumes the whole approval so no allowance outlives the call. No
 # release contains it yet (latest: v0.7.2, pre-release v0.8.0-rc.3). Move to
-# the crates.io release once v0.9.0 ships.
+# the crates.io release once v0.9.0 ships. The branch still reports version
+# 0.7.1, so Cargo.lock lists these crates as 0.7.1 at this git rev.
 [workspace.dependencies.stellar-accounts]
 git = "https://github.com/OpenZeppelin/stellar-contracts"
 rev = "df602b613fbc4ae1e98ff62ba3caef671a370f65"

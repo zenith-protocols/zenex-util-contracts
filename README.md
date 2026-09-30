@@ -102,7 +102,7 @@ market WASM in `market-router/testdata/market.wasm` (zenex-contracts `wasm/marke
 `02aa342f…943c`, the testnet-v3 market on chain), including a forwarded fill through
 `fee-forwarder` → router → market.
 
-Testnet run on 2026-10-01 through the ported router `CAZFL7XZ…` and its v4 instance `CDUXY6JM…`,
+Testnet run on 2026-09-30 through the ported router `CAZFL7XZ…` and its v4 instance `CDUXY6JM…`,
 over the same relay stack:
 
 | Signer | Flow | Transaction |
@@ -123,7 +123,15 @@ over the same relay stack:
 A trading session key is an ed25519 key registered on the smart account under a `Default` context
 rule with a `valid_until`. The constructor fixes the fee forwarder, the router, the markets, the
 collateral token and the fee recipient, one instance-storage entry each; there is no admin and no
-per-account state, and a rule installs the policy with an empty parameter. The key may sign:
+per-account state, a rule installs the policy with an empty parameter, and install stores nothing.
+The constructor rejects empty markets or any repeated address (`InvalidConfig` 4001).
+
+Every signer of the session rule must have signed (`SignerNotAuthenticated` 4007). The wallet checks
+a rule's signers itself only when the rule has no policies; with one, it leaves the check to the
+policy, so without it an authorization carrying no signature at all, naming the session rule, would
+pass. `session-policy/tests/signers.rs` runs that attack against the real canonical wallet and
+ed25519 verifier WASMs in `session-policy/testdata/`. With the session key's signature, the key may
+sign:
 
 - `forward` / `forward_unsafe` on the forwarder, when the signed projection
   `[fee_token, max_fee_amount, expiration_ledger, fee_recipient, target_contract, target_fn(, target_args)]`
@@ -174,8 +182,9 @@ make test
 ```
 
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --all -- --check` and `cargo test --locked
---workspace` on every push and pull request. The tests need no built WASM: the router suite loads the
-committed `market-router/testdata/market.wasm`.
+--workspace` on every push and pull request. The tests need no built WASM: the only WASMs they load
+are committed testdata, the market in `market-router/testdata/` and the canonical wallet and ed25519
+verifier in `session-policy/testdata/`.
 
 ## Error codes
 
@@ -188,7 +197,7 @@ so each contract here takes codes no neighbour uses. The codes that can meet in 
 | 1, 600–900 | zenex-contracts (governance, factory, market, oracle, strategy vault, treasury) |
 | 100–411, 1000–1502, 2000–2203 | OpenZeppelin `stellar-tokens`, `stellar-contract-utils` and `stellar-access`, in zenex-contracts |
 | 3000–3227 | OpenZeppelin `stellar-accounts`: the smart account, its verifiers and policies |
-| 4001–4006 | `session-policy` |
+| 4001–4007 | `session-policy` |
 | 5000–5006 | OpenZeppelin `stellar-fee-abstraction` |
 | 6001–6002 | `fee-forwarder` |
 | 7001 | `referral` |

@@ -17,8 +17,9 @@ stellar-cli:
 		{ echo "stellar-cli $$STELLAR_CLI_VERSION is required, found: $$(stellar --version | head -1)" >&2; exit 1; }
 
 # `--tests` selects every target with `test = true`, the in-crate unit suites
-# included. `--lib` is named alongside it so the intent reads explicitly.
-test: build
+# included. `--lib` is named alongside it so the intent reads explicitly. The
+# tests need no built WASM: the only WASM they load is committed testdata.
+test:
 	cargo test --locked --all --lib --tests
 
 build: stellar-cli

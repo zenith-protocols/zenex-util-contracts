@@ -615,6 +615,42 @@ fn create_and_fill_failure_leaves_nothing_resting() {
     assert_eq!(position.notional, 0);
 }
 
+// The try variant fills like `create_and_fill` when the fill succeeds: the
+// appended outcome is the payout, not an error, and the position opens.
+#[test]
+fn create_and_try_fill_fills_and_pays_keeper() {
+    let setup = flow_setup(flow_config());
+    let e = &setup.e;
+    let router = RouterContractClient::new(e, &setup.router);
+
+    let results = router.create_and_try_fill(
+        &open_batch(
+            e,
+            &setup.market,
+            &setup.user,
+            true,
+            50_0000000,
+            10_0000000,
+            0,
+        ),
+        &setup.user,
+        &setup.keeper,
+        &Bytes::new(e),
+    );
+    // One create plus the appended fill outcome, which is the payout.
+    assert_eq!(results.len(), 2);
+    assert!(!fill_rested(e, &results));
+    assert_eq!(fill_order_id(e, &results), 1);
+    assert_eq!(as_i128(e, &fill_outcome(&results)), 250_250);
+    assert_eq!(
+        token::Client::new(e, &setup.token).balance(&setup.keeper),
+        250_250
+    );
+
+    let position = market_wasm::Client::new(e, &setup.market).get_position(&setup.user, &true);
+    assert_eq!(position.notional, 50_0000000);
+}
+
 // The try variant reports the bound violation and leaves the order resting
 // for a later keeper fill.
 #[test]
@@ -651,9 +687,8 @@ fn create_and_try_fill_rests_on_fill_failure() {
     assert_eq!(order.notional, 50_0000000, "the order rests");
 }
 
-// The try variant leaves a whole batch resting when the fill fails: the market
-// open and both trailing triggers all rest, and the fee-free variant makes no
-// fee-related changes.
+// The try variant leaves the whole batch resting when the fill fails: the
+// market open and its trailing trigger both rest.
 #[test]
 fn create_and_try_fill_rests_whole_batch_on_fill_failure() {
     let setup = flow_setup(flow_config());

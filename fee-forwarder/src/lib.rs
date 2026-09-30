@@ -67,6 +67,23 @@
 //! must require the user's own authorization on its exact arguments. A Zenex
 //! order does: `create_order` calls `user.require_auth()`, so its arguments
 //! are part of the signed tree whatever the relayer puts in `target_args`.
+//!
+//! # Errors and events
+//!
+//! Both entry points fail with:
+//!
+//! - `FeeForwarderError::TargetNotAllowed` (6001) if `target_fn` is
+//!   `transfer_from` or `burn_from`;
+//! - `FeeForwarderError::InvalidRecipient` (6002) if `fee_recipient` is the
+//!   forwarder;
+//! - `FeeAbstractionError::InvalidFeeBounds` if `fee_amount` is not above
+//!   zero or exceeds `max_fee_amount`;
+//! - `FeeAbstractionError::InvalidUser` if `user` is the forwarder;
+//! - the token's own error if `user` holds less than `max_fee_amount`.
+//!
+//! A successful call emits `["fee_collected", user, recipient]` with data
+//! `[token, amount]`, then `["forward_executed", user, target_contract]` with
+//! data `[target_fn, target_args]`.
 
 #[cfg(test)]
 mod test;
@@ -98,6 +115,9 @@ impl FeeForwarderContract {
     /// then calls `target_contract.target_fn(target_args)` and returns its
     /// result. A failing target also reverts the fee.
     ///
+    /// `user` authorizes `(fee_token, max_fee_amount, expiration_ledger,
+    /// fee_recipient, target_contract, target_fn, target_args)`.
+    ///
     /// # Arguments
     ///
     /// * `e` - Access to the Soroban environment.
@@ -106,36 +126,11 @@ impl FeeForwarderContract {
     /// * `max_fee_amount` - The fee cap the user signs.
     /// * `expiration_ledger` - The fee allowance's live-until ledger, at or
     ///   after execution.
-    /// * `target_contract` - The contract to call.
-    /// * `target_fn` - The function to call.
-    /// * `target_args` - The call's arguments.
+    /// * `target_contract`, `target_fn`, `target_args` - The call to make.
     /// * `user` - The fee payer.
     /// * `fee_recipient` - The fee payee.
     ///
-    /// # Errors
-    ///
-    /// * `FeeForwarderError::TargetNotAllowed` - If `target_fn` is
-    ///   `transfer_from` or `burn_from`.
-    /// * `FeeForwarderError::InvalidRecipient` - If `fee_recipient` is the
-    ///   forwarder.
-    /// * `FeeAbstractionError::InvalidFeeBounds` - If `fee_amount` is not
-    ///   above zero or exceeds `max_fee_amount`.
-    /// * `FeeAbstractionError::InvalidUser` - If `user` is the forwarder.
-    /// * The token's own error if `user` holds less than `max_fee_amount`.
-    ///
-    /// # Events
-    ///
-    /// * topics - `["fee_collected", user: Address, recipient: Address]`
-    /// * data - `[token: Address, amount: i128]`
-    /// * topics - `["forward_executed", user: Address, target_contract:
-    ///   Address]`
-    /// * data - `[target_fn: Symbol, target_args: Vec<Val>]`
-    ///
-    /// # Notes
-    ///
-    /// * Authorization for `user` is required over `(fee_token,
-    ///   max_fee_amount, expiration_ledger, fee_recipient, target_contract,
-    ///   target_fn, target_args)`.
+    /// Errors and events are listed in the crate docs.
     pub fn forward(
         e: Env,
         fee_token: Address,
@@ -181,13 +176,9 @@ impl FeeForwarderContract {
     ///
     /// * Refer to [`Self::forward`].
     ///
-    /// # Errors
+    /// # Errors and events
     ///
-    /// * Refer to [`Self::forward`].
-    ///
-    /// # Events
-    ///
-    /// * Refer to [`Self::forward`].
+    /// * Listed in the crate docs, the same as [`Self::forward`].
     ///
     /// # Notes
     ///
