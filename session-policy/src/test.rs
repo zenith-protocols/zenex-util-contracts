@@ -187,6 +187,17 @@ fn test_constructor_stores_one_instance_entry_per_value() {
         assert_eq!(instance.get(&TOKEN), Some(s.token.clone()));
         assert_eq!(instance.get(&FEE_RECIPIENT), Some(s.fee_recipient.clone()));
     });
+
+    // With no getter, these names are what off-chain readers look up.
+    for (key, name) in [
+        (FORWARDER, "forwarder"),
+        (ROUTER, "router"),
+        (MARKETS, "markets"),
+        (TOKEN, "token"),
+        (FEE_RECIPIENT, "recipient"),
+    ] {
+        assert_eq!(key, Symbol::new(e, name));
+    }
 }
 
 /// Registers the policy with the given constructor arguments.
