@@ -14,6 +14,8 @@ use stellar_fee_abstraction::{collect_fee_and_invoke, FeeAbstractionApproval};
 const INVALID_FEE_BOUNDS: u32 = 5003;
 // The forwarder's refusal of an allowance-spending target.
 const TARGET_NOT_ALLOWED: u32 = 6001;
+// The forwarder's refusal to pay the fee to itself.
+const INVALID_RECIPIENT: u32 = 6002;
 // The mock target's deliberate failure.
 const PROBE_FAILED: u32 = 99;
 
@@ -161,8 +163,8 @@ impl MockRouter {
 }
 
 /// OpenZeppelin's permissionless fee forwarder example, verbatim in logic:
-/// the recipient is unsigned, the leftover allowance is kept, and any target
-/// is called.
+/// the recipient is unsigned and any target is called. Built on the pinned
+/// v0.9.0 helper, so its Eager collection consumes the whole approval.
 #[contract]
 struct OzExampleForwarder;
 
@@ -287,31 +289,21 @@ impl World {
     }
 
     /// Mocks exactly the tree the wallet signs when the target needs no
-    /// authorization of its own: the root projection and the two fee
-    /// approves.
+    /// authorization of its own: the root projection and the fee approve.
     fn sign(&self, fn_name: &str, projection: Vec<Val>) {
         let approve_max = self.approve_args(MAX_FEE);
-        let approve_zero = self.approve_args(0);
         self.e.mock_auths(&[MockAuth {
             address: &self.user,
             invoke: &MockAuthInvoke {
                 contract: &self.forwarder.address,
                 fn_name,
                 args: projection,
-                sub_invokes: &[
-                    MockAuthInvoke {
-                        contract: &self.usdc.address,
-                        fn_name: "approve",
-                        args: approve_max,
-                        sub_invokes: &[],
-                    },
-                    MockAuthInvoke {
-                        contract: &self.usdc.address,
-                        fn_name: "approve",
-                        args: approve_zero,
-                        sub_invokes: &[],
-                    },
-                ],
+                sub_invokes: &[MockAuthInvoke {
+                    contract: &self.usdc.address,
+                    fn_name: "approve",
+                    args: approve_max,
+                    sub_invokes: &[],
+                }],
             },
         }]);
     }
@@ -380,11 +372,11 @@ fn contract_error(code: u32) -> Error {
 }
 
 // ==========================================
-// Fee collection and the reset
+// Fee collection
 // ==========================================
 
 #[test]
-fn forward_collects_the_fee_resets_the_allowance_and_calls_the_target() {
+fn forward_collects_the_fee_refunds_the_rest_and_calls_the_target() {
     let w = setup();
     let args = w.probe_args(1);
     w.sign("forward", w.projection(&w.probe, "probe", &args));
@@ -392,15 +384,23 @@ fn forward_collects_the_fee_resets_the_allowance_and_calls_the_target() {
     // The probe reports the allowance it sees while it runs.
     let seen = w.forward_probe("forward", 1, &w.recipient);
 
-    assert_eq!(seen, 0, "the allowance is reset before the target runs");
+    assert_eq!(
+        seen, 0,
+        "the pull consumes the allowance before the target runs"
+    );
     assert_eq!(w.allowance(), 0);
     assert_eq!(w.usdc.balance(&w.recipient), FEE);
-    assert_eq!(w.usdc.balance(&w.user), BALANCE - FEE);
+    assert_eq!(
+        w.usdc.balance(&w.user),
+        BALANCE - FEE,
+        "the rest is refunded"
+    );
+    assert_eq!(w.usdc.balance(&w.forwarder.address), 0);
     assert_eq!(w.last_tag(), 1);
 }
 
 #[test]
-fn forward_unsafe_collects_the_fee_and_resets_the_allowance() {
+fn forward_unsafe_collects_the_fee_and_consumes_the_allowance() {
     let w = setup();
     w.sign("forward_unsafe", w.unsafe_projection(&w.probe, "probe"));
 
@@ -409,6 +409,95 @@ fn forward_unsafe_collects_the_fee_and_resets_the_allowance() {
     assert_eq!(seen, 0);
     assert_eq!(w.allowance(), 0);
     assert_eq!(w.usdc.balance(&w.recipient), FEE);
+    assert_eq!(w.usdc.balance(&w.user), BALANCE - FEE);
+    assert_eq!(w.usdc.balance(&w.forwarder.address), 0);
+}
+
+#[test]
+fn a_fee_at_the_cap_leaves_nothing_to_refund() {
+    let w = setup();
+    let args = w.probe_args(1);
+    w.e.mock_all_auths();
+
+    w.forwarder.forward(
+        &w.usdc.address,
+        &MAX_FEE,
+        &MAX_FEE,
+        &EXPIRATION,
+        &w.probe,
+        &Symbol::new(&w.e, "probe"),
+        &args,
+        &w.user,
+        &w.recipient,
+    );
+
+    assert_eq!(w.usdc.balance(&w.recipient), MAX_FEE);
+    assert_eq!(w.usdc.balance(&w.user), BALANCE - MAX_FEE);
+    assert_eq!(w.usdc.balance(&w.forwarder.address), 0);
+    assert_eq!(w.allowance(), 0);
+}
+
+#[test]
+fn the_balance_must_cover_the_fee_cap() {
+    // The pull takes the whole cap before the refund, so a balance that
+    // covers the fee but not the cap fails, and nothing moves.
+    let e = Env::default();
+    let usdc = new_token(&e);
+    let forwarder = FeeForwarderContractClient::new(&e, &e.register(FeeForwarderContract, ()));
+    let probe = e.register(MockProbe, ());
+    let user = Address::generate(&e);
+    let recipient = Address::generate(&e);
+    mint(&e, &usdc.address, &user, MAX_FEE - 1);
+    let args: Vec<Val> = (
+        user.clone(),
+        usdc.address.clone(),
+        forwarder.address.clone(),
+        1u32,
+    )
+        .into_val(&e);
+    e.mock_all_auths();
+
+    let result = forwarder.try_forward(
+        &usdc.address,
+        &FEE,
+        &MAX_FEE,
+        &EXPIRATION,
+        &probe,
+        &Symbol::new(&e, "probe"),
+        &args,
+        &user,
+        &recipient,
+    );
+
+    assert!(result.is_err());
+    assert_eq!(usdc.balance(&user), MAX_FEE - 1);
+    assert_eq!(usdc.balance(&recipient), 0);
+    assert_eq!(usdc.allowance(&user, &forwarder.address), 0);
+}
+
+#[test]
+fn the_forwarder_cannot_be_the_recipient() {
+    let w = setup();
+    let args = w.probe_args(1);
+    w.e.mock_all_auths();
+
+    let result = w.forwarder.try_forward_unsafe(
+        &w.usdc.address,
+        &FEE,
+        &MAX_FEE,
+        &EXPIRATION,
+        &w.probe,
+        &Symbol::new(&w.e, "probe"),
+        &args,
+        &w.user,
+        &w.forwarder.address,
+    );
+
+    assert_eq!(
+        result.err().unwrap().unwrap(),
+        contract_error(INVALID_RECIPIENT)
+    );
+    assert_eq!(w.usdc.balance(&w.user), BALANCE);
 }
 
 #[test]
@@ -524,7 +613,6 @@ fn forward_unsafe_cannot_change_a_user_authorized_call() {
     let e = &w.e;
     let sign_act = |tag: u32| {
         let approve_max = w.approve_args(MAX_FEE);
-        let approve_zero = w.approve_args(0);
         let act: Vec<Val> = (w.user.clone(), tag).into_val(e);
         e.mock_auths(&[MockAuth {
             address: &w.user,
@@ -537,12 +625,6 @@ fn forward_unsafe_cannot_change_a_user_authorized_call() {
                         contract: &w.usdc.address,
                         fn_name: "approve",
                         args: approve_max,
-                        sub_invokes: &[],
-                    },
-                    MockAuthInvoke {
-                        contract: &w.usdc.address,
-                        fn_name: "approve",
-                        args: approve_zero,
                         sub_invokes: &[],
                     },
                     MockAuthInvoke {
@@ -698,14 +780,6 @@ fn the_recorded_tree_is_the_forwarder_root_without_the_router() {
                     w.usdc.address.clone(),
                     Symbol::new(e, "approve"),
                     w.approve_args(MAX_FEE),
-                )),
-                sub_invocations: std::vec![],
-            },
-            AuthorizedInvocation {
-                function: AuthorizedFunction::Contract((
-                    w.usdc.address.clone(),
-                    Symbol::new(e, "approve"),
-                    w.approve_args(0),
                 )),
                 sub_invocations: std::vec![],
             },
@@ -874,10 +948,14 @@ fn a_standalone_approve_cannot_be_spent_through_a_forward() {
 }
 
 #[test]
-fn the_oz_example_forwarder_leaks_a_leftover_to_anyone() {
-    // Why the reset and the refusal exist. The OpenZeppelin example keeps
-    // `max_fee_amount - fee_amount` approved after a forward, and calls any
-    // target, so another user's forward can spend that leftover.
+fn the_oz_example_forwarder_spends_an_allowance_granted_outside_a_forward() {
+    // Why the refusal still exists on the v0.9.0 helper. OpenZeppelin #873
+    // (issue #875) makes the Eager collection consume the whole approval, so
+    // a forward no longer leaves a leftover behind. The example still calls
+    // any target, though, so an allowance a user grants the forwarder
+    // directly, as a stolen session key could, is spendable by anyone's
+    // forward. This forwarder refuses that target (see
+    // `a_standalone_approve_cannot_be_spent_through_a_forward`).
     let e = Env::default();
     let token_b = new_token(&e);
     let token_a = new_token(&e);
@@ -891,7 +969,7 @@ fn the_oz_example_forwarder_leaks_a_leftover_to_anyone() {
     let client = OzExampleForwarderClient::new(&e, &forwarder);
     e.mock_all_auths();
 
-    // The victim pays 0.4 of a 1 cap in token B.
+    // The victim pays 0.4 of a 1 cap in token B: the fix leaves no leftover.
     let probe_args: Vec<Val> = (
         victim.clone(),
         token_b.address.clone(),
@@ -910,19 +988,18 @@ fn the_oz_example_forwarder_leaks_a_leftover_to_anyone() {
         &victim,
         &relayer,
     );
-    assert_eq!(token_b.allowance(&victim, &forwarder), MAX_FEE - FEE);
+    assert_eq!(token_b.allowance(&victim, &forwarder), 0);
+    assert_eq!(token_b.balance(&victim), BALANCE - FEE);
+
+    // The victim then approves the forwarder directly, outside any forward.
+    token_b.approve(&victim, &forwarder, &MAX_FEE, &EXPIRATION);
 
     // The attacker pays in token A and targets token B's transfer_from. The
     // example requires the relayer's authorization first, so the attacker
     // relays from a second address of their own.
     let attacker_relayer = Address::generate(&e);
-    let drain: Vec<Val> = (
-        forwarder.clone(),
-        victim.clone(),
-        attacker.clone(),
-        MAX_FEE - FEE,
-    )
-        .into_val(&e);
+    let drain: Vec<Val> =
+        (forwarder.clone(), victim.clone(), attacker.clone(), MAX_FEE).into_val(&e);
     client.forward(
         &token_a.address,
         &FEE,
@@ -935,6 +1012,6 @@ fn the_oz_example_forwarder_leaks_a_leftover_to_anyone() {
         &attacker_relayer,
     );
 
-    assert_eq!(token_b.balance(&attacker), MAX_FEE - FEE);
-    assert_eq!(token_b.balance(&victim), BALANCE - MAX_FEE);
+    assert_eq!(token_b.balance(&attacker), MAX_FEE);
+    assert_eq!(token_b.balance(&victim), BALANCE - FEE - MAX_FEE);
 }
