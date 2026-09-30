@@ -2,7 +2,7 @@
 
 mod contract;
 pub use contract::{
-    Session, SessionConfig, SessionPolicyContract, SessionPolicyContractClient, SessionPolicyError,
+    Config, SessionPolicyContract, SessionPolicyContractClient, SessionPolicyError,
 };
 
 #[cfg(test)]
