@@ -168,6 +168,10 @@ Run the unit tests with:
 make test
 ```
 
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --all -- --check` and `cargo test --locked
+--workspace` on every push and pull request. The tests need no built WASM: the router suite loads the
+committed `market-router/testdata/market.wasm`.
+
 ## Deployment
 
 `make` writes optimized WASM to `target/wasm32v1-none/release/`.
