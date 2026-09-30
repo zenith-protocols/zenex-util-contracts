@@ -10,11 +10,11 @@ depend on its interfaces.
 | Crate | Description |
 |-------|-------------|
 | `referral` | Referral attestation: a wallet attests which wallet referred it |
-| `session-policy` | Smart-account policy for session keys: a contract allowlist and one allowed transfer destination |
+| `session-policy` | Smart-account policy for trading session keys: a contract allowlist and a spend limit on the collateral token |
 
-`session-policy` is not safe to deploy: its transfer-destination guard is bypassable (unrestricted
-`approve`, muxed `to` addresses, the router's fee envelope). Kept for the testnet record; must be
-rewritten before any mainnet use.
+This source is session-policy v2, which is not deployed and needs review before any deploy. The
+testnet address below runs v1, whose transfer-destination guard is bypassable (unrestricted
+`approve`, muxed `to` addresses, the router's fee envelope).
 
 ### Referral
 
@@ -23,6 +23,19 @@ authorization and fails with `ReferralError::SelfReferral` (1) when `caller == r
 `Attributed { referee, referrer }` with topics `("attributed", referee, referrer)`, so indexers can
 filter on either side, and returns `(caller, referrer)` for simulation pre-flight. The event log is
 the record: the contract has no storage, no admin and no constructor.
+
+### Session policy
+
+A trading session key is an ed25519 key registered on the smart account under a `Default` context
+rule with a `valid_until`. The policy lets the key call `allowed_contracts` (the markets and the
+router) and `transfer` or `approve` the collateral `token`. Every token amount counts against
+`spend_limit`, the budget the user sets for the session, wherever it goes; a context past the budget
+fails with `SpendLimitExceeded` (4007). Everything else fails closed: the wallet itself, other
+tokens, other token functions and contract creation. `get_session(smart_account, context_rule_id)`
+returns the config and the amount spent.
+
+The budget counts what the key commits (margin, execution fees, the relay fee cap), not the net
+loss. Closing a position does not refill it, and an `approve` counts at its full amount.
 
 ## Getting Started
 
@@ -63,4 +76,5 @@ The testnet contracts were built from the legacy local sources
 (`soroban-smart-account/session-policy` @ 9cded45 and `soroban-referral`), which reproduce the
 deployed wasm byte-for-byte with rustc 1.93.1, stellar CLI 25.2.0 and their original lockfiles.
 This workspace builds with soroban-sdk 26 and one shared lockfile, so its output does not match
-those hashes. The contract functions and their argument types are unchanged.
+those hashes. The referral functions and their argument types are unchanged; session-policy v2
+changes `SessionConfig` and adds `get_session`.

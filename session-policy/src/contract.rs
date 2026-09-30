@@ -1,23 +1,37 @@
 //! # Session Policy Contract
 //!
-//! A policy that restricts a smart account signer (e.g. a passkey) to only
-//! interact with whitelisted contracts, and ensures token transfers can only
-//! flow to a single allowed destination.
+//! A policy for trading session keys. The frontend registers an ed25519
+//! session key on the smart account under a `Default` context rule with a
+//! `valid_until`, so trades sign without a passkey prompt until the rule
+//! expires. The account calls `enforce` once for every auth context the key
+//! signs, and this policy lets through only:
 //!
-//! This solves the DeFi composability problem where `open_position` triggers a
-//! sub-auth for `token.transfer`. Without this policy, allowing the token
-//! contract would let the signer drain funds to any address. With it, transfers
-//! are locked to the trading contract.
+//! - calls to `allowed_contracts` (the markets and the router), and
+//! - `transfer` and `approve` on `token` (the collateral), within a budget.
 //!
-//! ## Setup
+//! Everything else fails closed: any other contract (the wallet itself, other
+//! tokens, the vault), any other token function, and every non-contract
+//! context.
 //!
-//! ```text
-//! Rule 0 (Default, "owner")   — owner keypair, no policies, full access
-//! Rule 1 (Default, "session") — passkey + SessionPolicy, restricted
-//! ```
+//! ## Budget
 //!
-//! The owner bypasses this policy entirely (rule 0 has no policies).
-//! The passkey's rule 1 enforces the session policy on every auth context.
+//! `spend_limit` is the budget the user sets for the session. Every
+//! `transfer` and `approve` of `token` adds its full amount to `spent`,
+//! wherever it goes, and a context that would take `spent` past the limit is
+//! rejected. Destinations are never decoded, so muxed addresses and
+//! third-party allowances count like any other amount.
+//!
+//! A stolen key can trade on the allowed markets, which pay out only to the
+//! wallet, and move at most the remaining budget out of the wallet. It cannot
+//! touch other tokens, change the wallet's signers or rules, or upgrade it.
+//!
+//! Trade-offs:
+//! - The budget counts what the key commits (margin, execution fees, the
+//!   relay fee cap), not the net loss.
+//! - Closing a position does not refill the budget; a new session starts a
+//!   new one.
+//! - An `approve` counts at its full amount, although the router spends at
+//!   most the fee and wipes the rest.
 use soroban_sdk::{
     auth::{Context, ContractContext},
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
@@ -35,23 +49,41 @@ use stellar_accounts::{
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionConfig {
+    /// The contracts the key may call: the markets and the router.
     pub allowed_contracts: Vec<Address>,
-    pub allowed_transfer_to: Address,
+    /// The only token the key may move: the collateral.
+    pub token: Address,
+    /// The session budget: the most `token` the key may transfer or approve
+    /// in total (token-dec).
+    pub spend_limit: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Session {
+    pub config: SessionConfig,
+    /// The `token` the key has transferred or approved so far (token-dec).
+    pub spent: i128,
 }
 
 #[contracttype]
 enum StorageKey {
-    Config(Address, u32), // (smart_account, context_rule_id)
+    Session(Address, u32), // (smart_account, context_rule_id)
 }
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum SessionPolicyError {
     ContractNotAllowed = 4001,
-    TransferDestinationNotAllowed = 4002,
+    // 4002 was v1's TransferDestinationNotAllowed. v2 caps amounts instead
+    // of checking destinations, so the code is retired.
     AlreadyInstalled = 4003,
     NotInstalled = 4004,
     EmptyAllowedContracts = 4005,
+    FunctionNotAllowed = 4006,
+    SpendLimitExceeded = 4007,
+    InvalidSpendLimit = 4008,
+    InvalidAmount = 4009,
 }
 
 // ==========================================
@@ -81,39 +113,43 @@ impl Policy for SessionPolicyContract {
     ) {
         smart_account.require_auth();
 
-        let config = get_config(e, context_rule.id, &smart_account);
+        let key = StorageKey::Session(smart_account, context_rule.id);
+        let mut session = read_session(e, &key);
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, EXTEND_AMOUNT);
 
-        match &context {
-            Context::Contract(ContractContext {
-                contract,
-                fn_name,
-                args,
-                ..
-            }) => {
-                // 1. Called contract must be in the whitelist
-                if !config.allowed_contracts.contains(contract) {
-                    panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
-                }
+        // Only contract calls. Contract creation cannot match an allowed
+        // contract.
+        let Context::Contract(ContractContext {
+            contract,
+            fn_name,
+            args,
+        }) = context
+        else {
+            panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
+        };
 
-                // 2. For token transfers, the destination must match
-                if fn_name == &symbol_short!("transfer") {
-                    if let Some(to_val) = args.get(1) {
-                        if let Ok(to) = Address::try_from_val(e, &to_val) {
-                            if to != config.allowed_transfer_to {
-                                panic_with_error!(
-                                    e,
-                                    SessionPolicyError::TransferDestinationNotAllowed
-                                );
-                            }
-                        }
-                    }
-                }
+        if contract == session.config.token {
+            // The token leaves only by `transfer(from, to, amount)` or
+            // `approve(from, spender, amount, expiration_ledger)`. Both carry
+            // the amount third, and every unit counts wherever it goes.
+            if fn_name != symbol_short!("transfer") && fn_name != symbol_short!("approve") {
+                panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
             }
-            _ => {
-                // Non-contract contexts (e.g. CreateContract) are blocked —
-                // they cannot match any allowed contract address.
-                panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
-            }
+            let amount = args
+                .get(2)
+                .and_then(|val| i128::try_from_val(e, &val).ok())
+                .filter(|amount| *amount >= 0)
+                .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::InvalidAmount));
+            session.spent = session
+                .spent
+                .checked_add(amount)
+                .filter(|spent| *spent <= session.config.spend_limit)
+                .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::SpendLimitExceeded));
+            e.storage().persistent().set(&key, &session);
+        } else if !session.config.allowed_contracts.contains(&contract) {
+            panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
         }
     }
 
@@ -128,14 +164,24 @@ impl Policy for SessionPolicyContract {
         if config.allowed_contracts.is_empty() {
             panic_with_error!(e, SessionPolicyError::EmptyAllowedContracts);
         }
+        // The key never reaches the wallet itself: no signer, rule or
+        // upgrade calls.
+        if config.allowed_contracts.contains(&smart_account) || config.token == smart_account {
+            panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
+        }
+        if config.spend_limit <= 0 {
+            panic_with_error!(e, SessionPolicyError::InvalidSpendLimit);
+        }
 
-        let key = StorageKey::Config(smart_account.clone(), context_rule.id);
+        let key = StorageKey::Session(smart_account, context_rule.id);
 
         if e.storage().persistent().has(&key) {
             panic_with_error!(e, SessionPolicyError::AlreadyInstalled);
         }
 
-        e.storage().persistent().set(&key, &config);
+        e.storage()
+            .persistent()
+            .set(&key, &Session { config, spent: 0 });
         e.storage()
             .persistent()
             .extend_ttl(&key, TTL_THRESHOLD, EXTEND_AMOUNT);
@@ -144,7 +190,7 @@ impl Policy for SessionPolicyContract {
     fn uninstall(e: &Env, context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
 
-        let key = StorageKey::Config(smart_account.clone(), context_rule.id);
+        let key = StorageKey::Session(smart_account, context_rule.id);
 
         if !e.storage().persistent().has(&key) {
             panic_with_error!(e, SessionPolicyError::NotInstalled);
@@ -154,19 +200,23 @@ impl Policy for SessionPolicyContract {
     }
 }
 
+#[contractimpl]
+impl SessionPolicyContract {
+    /// Returns the session installed for `(smart_account, context_rule_id)`:
+    /// its config and what the key has spent, so the UI can show the
+    /// remaining budget.
+    pub fn get_session(e: Env, smart_account: Address, context_rule_id: u32) -> Session {
+        read_session(&e, &StorageKey::Session(smart_account, context_rule_id))
+    }
+}
+
 // ==========================================
 // Helpers
 // ==========================================
 
-fn get_config(e: &Env, context_rule_id: u32, smart_account: &Address) -> SessionConfig {
-    let key = StorageKey::Config(smart_account.clone(), context_rule_id);
-
+fn read_session(e: &Env, key: &StorageKey) -> Session {
     e.storage()
         .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, EXTEND_AMOUNT);
-
-    e.storage()
-        .persistent()
-        .get(&key)
+        .get(key)
         .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::NotInstalled))
 }
