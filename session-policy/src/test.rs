@@ -7,7 +7,7 @@ use soroban_sdk::{
 };
 use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 
-use crate::contract::{
+use crate::{
     SessionPolicyContract, SessionPolicyContractClient, FEE_RECIPIENT, FORWARDER, MARKETS, ROUTER,
     TOKEN,
 };

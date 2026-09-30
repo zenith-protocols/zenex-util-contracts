@@ -14,20 +14,26 @@
 //! remaining functions keep their names, argument order, return shapes and the
 //! `Call` type.
 
-mod dependencies;
-mod types;
-
 #[cfg(test)]
 mod test;
 
-pub use types::Call;
-
-use dependencies::MarketClient;
 use soroban_sdk::{
-    contract, contractimpl,
+    contract, contractimpl, contracttype, vec,
     xdr::{ScErrorCode, ScErrorType},
-    Address, Bytes, Env, IntoVal, TryFromVal, Val, Vec,
+    Address, Bytes, Env, IntoVal, Symbol, TryFromVal, Val, Vec,
 };
+
+/// One contract invocation in a batch.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Call {
+    /// The target contract.
+    pub contract: Address,
+    /// The entry-point name.
+    pub func: Symbol,
+    /// The positional arguments, host-encoded.
+    pub args: Vec<Val>,
+}
 
 /// Stateless call router contract. It owns nothing and holds nothing.
 #[contract]
@@ -120,7 +126,8 @@ impl RouterContract {
         price: Bytes,
     ) -> Vec<Val> {
         let (mut results, market, id) = run_create_batch(&e, &calls);
-        let payout = MarketClient::new(&e, &market).execute_order(&keeper, &user, &id, &price);
+        let (func, args) = fill_call(&e, &keeper, &user, id, &price);
+        let payout: i128 = e.invoke_contract(&market, &func, args);
         results.push_back(payout.into_val(&e));
         results
     }
@@ -157,10 +164,10 @@ impl RouterContract {
         price: Bytes,
     ) -> Vec<Val> {
         let (mut results, market, id) = run_create_batch(&e, &calls);
-        let client = MarketClient::new(&e, &market);
+        let (func, args) = fill_call(&e, &keeper, &user, id, &price);
         results.push_back(try_fill_outcome(
             &e,
-            client.try_execute_order(&keeper, &user, &id, &price),
+            e.try_invoke_contract::<i128, soroban_sdk::Error>(&market, &func, args),
         ));
         results
     }
@@ -196,6 +203,28 @@ fn run_create_batch(e: &Env, calls: &Vec<Call>) -> (Vec<Val>, Address, u32) {
     // conversion.
     let id = u32::try_from_val(e, &results.get(0).unwrap()).unwrap();
     (results, market, id)
+}
+
+/// Builds the fill leg's call to the market: `execute_order(keeper, user, id,
+/// price)`, which returns the keeper payout (token-dec). It is the router's only
+/// typed call; the create leg rides the generic [`Call`] batch.
+fn fill_call(
+    e: &Env,
+    keeper: &Address,
+    user: &Address,
+    id: u32,
+    price: &Bytes,
+) -> (Symbol, Vec<Val>) {
+    (
+        Symbol::new(e, "execute_order"),
+        vec![
+            e,
+            keeper.into_val(e),
+            user.into_val(e),
+            id.into_val(e),
+            price.into_val(e),
+        ],
+    )
 }
 
 /// Encodes an isolated fill leg's result as a single `Val`, exactly like
