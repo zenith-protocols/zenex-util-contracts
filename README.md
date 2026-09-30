@@ -73,8 +73,8 @@ anyone's forward there (see the
 Both entry points fail with `TargetNotAllowed` (6001), `InvalidRecipient` (6002), OpenZeppelin's
 `InvalidFeeBounds` when `fee_amount` is not above zero or exceeds the cap, `InvalidUser` when `user`
 is the forwarder, and the token's own error when `user` holds less than the cap. A successful call
-emits `["fee_collected", user, recipient]` with data `[token, amount]`, then
-`["forward_executed", user, target_contract]` with data `[target_fn, target_args]`.
+emits only OpenZeppelin's `["fee_collected", user, recipient]` with data `[token, amount]`; there is
+no forward event, since the call data is already in the transaction and the target emits its own.
 
 For a Zenex order the wallet signs one tree rooted at the forwarder call: `approve(forwarder, cap)`
 and `market.create_order` with its escrow `transfer`. When the target is the market router, the

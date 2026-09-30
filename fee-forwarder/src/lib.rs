@@ -12,7 +12,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, panic_with_error, Address, Env, IntoVal, Symbol, Val,
     Vec,
 };
-use stellar_fee_abstraction::{collect_fee, emit_forward_executed, FeeAbstractionApproval};
+use stellar_fee_abstraction::{collect_fee, FeeAbstractionApproval};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -194,7 +194,5 @@ fn collect_and_invoke(
         FeeAbstractionApproval::Eager,
     );
 
-    let result = e.invoke_contract::<Val>(target_contract, target_fn, target_args.clone());
-    emit_forward_executed(e, user, target_contract, target_fn, target_args);
-    result
+    e.invoke_contract::<Val>(target_contract, target_fn, target_args.clone())
 }
