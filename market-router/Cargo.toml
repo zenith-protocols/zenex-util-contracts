@@ -1,0 +1,21 @@
+[package]
+name = "market-router"
+version = "0.0.0"
+authors = ["Zenith Protocols"]
+license = "AGPL-3.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+doctest = false
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+fee-forwarder = { path = "../fee-forwarder" }

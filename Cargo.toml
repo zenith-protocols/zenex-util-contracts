@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "fee-forwarder",
+  "market-router",
   "referral",
   "session-policy",
 ]
