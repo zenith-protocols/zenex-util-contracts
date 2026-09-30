@@ -6,14 +6,25 @@ members = [
   "session-policy",
 ]
 
+# Matches the pinned OpenZeppelin commit below: its Cargo.lock resolves
+# soroban-sdk 27.0.6 with the `experimental_spec_shaking_v2` feature, which the
+# OZ crates switch on for the whole graph anyway.
 [workspace.dependencies.soroban-sdk]
-version = "26.1.1"
+version = "27.0.6"
+features = ["experimental_spec_shaking_v2"]
 
+# OpenZeppelin stellar-contracts, UNRELEASED and UNAUDITED: the head of the
+# `v0.9.0` branch. It carries OZ PR #873 (issue #875), whose Eager fee
+# collection consumes the whole approval so no allowance outlives the call. No
+# release contains it yet (latest: v0.7.2, pre-release v0.8.0-rc.3). Move to
+# the crates.io release once v0.9.0 ships.
 [workspace.dependencies.stellar-accounts]
-version = "0.7.2"
+git = "https://github.com/OpenZeppelin/stellar-contracts"
+rev = "df602b613fbc4ae1e98ff62ba3caef671a370f65"
 
 [workspace.dependencies.stellar-fee-abstraction]
-version = "0.7.2"
+git = "https://github.com/OpenZeppelin/stellar-contracts"
+rev = "df602b613fbc4ae1e98ff62ba3caef671a370f65"
 
 [profile.release]
 opt-level = "z"

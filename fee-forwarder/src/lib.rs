@@ -27,15 +27,17 @@
 //!
 //! # Allowances
 //!
-//! The fee is collected through an allowance to the forwarder, the way
-//! OpenZeppelin's Eager approval does it after
-//! [OpenZeppelin/stellar-contracts#873] (the fix for issue #875): the user
+//! The fee is collected by OpenZeppelin's own `collect_fee` with Eager
+//! approval, from the `stellar-fee-abstraction` crate pinned to the head of
+//! OpenZeppelin's `v0.9.0` branch (commit `df602b6`). That code is UNRELEASED
+//! and UNAUDITED. It is used because only that branch carries
+//! [OpenZeppelin/stellar-contracts#873], the fix for issue #875: the user
 //! approves `max_fee_amount`, the forwarder pulls the whole `max_fee_amount`
 //! to itself, pays `fee_amount` to `fee_recipient` and refunds the rest. The
 //! pull consumes the allowance, so it ends at zero, and the user's balance
-//! must cover `max_fee_amount`, not only `fee_amount`. That change is only on
-//! OpenZeppelin's unreleased v0.9.0 branch, which needs soroban-sdk 27, so it
-//! is copied here against the released 0.7.2 crate until v0.9.0 ships.
+//! must cover `max_fee_amount`, not only `fee_amount`. Every released version
+//! (up to 0.7.2 and 0.8.0-rc.3) pulls only the fee and leaves the rest of the
+//! allowance standing.
 //!
 //! The forwarder calls the target directly, and a contract is authorized for
 //! the calls it makes directly, so a target of `token.transfer_from(forwarder,
@@ -48,6 +50,12 @@
 //!   allowance, are refused as a target on every contract. An allowance a
 //!   user grants the forwarder outside a forward can therefore never be
 //!   spent through one.
+//!
+//! OpenZeppelin keeps the fee in the contract when the recipient is the
+//! contract itself, for a later sweep. This forwarder has no sweep, and a
+//! forward whose target is the token's `transfer` from the forwarder can move
+//! any balance it holds, so such a fee would go to whoever takes it first.
+//! The forwarder is therefore refused as `fee_recipient`.
 //!
 //! [OpenZeppelin/stellar-contracts#873]:
 //!     https://github.com/OpenZeppelin/stellar-contracts/pull/873
@@ -64,12 +72,10 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, panic_with_error, token, Address, Env, IntoVal, Symbol,
-    Val, Vec,
+    contract, contracterror, contractimpl, panic_with_error, Address, Env, IntoVal, Symbol, Val,
+    Vec,
 };
-use stellar_fee_abstraction::{
-    emit_fee_collected, emit_forward_executed, validate_fee_bounds, FeeAbstractionError,
-};
+use stellar_fee_abstraction::{collect_fee, emit_forward_executed, FeeAbstractionApproval};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -229,12 +235,15 @@ impl FeeForwarderContract {
     }
 }
 
-/// Refuses the allowance-spending token functions, collects the fee, then
-/// calls the target and returns its result.
+/// Refuses the allowance-spending token functions and a forwarder recipient,
+/// collects the fee with OpenZeppelin's Eager `collect_fee`, then calls the
+/// target and returns its result.
 ///
 /// # Errors
 /// - `FeeForwarderError::TargetNotAllowed` if `target_fn` is `transfer_from`
 ///   or `burn_from`.
+/// - `FeeForwarderError::InvalidRecipient` if `fee_recipient` is the
+///   forwarder.
 /// - Refer to [`collect_fee`] errors.
 ///
 /// # Events
@@ -258,6 +267,11 @@ fn collect_and_invoke(
         panic_with_error!(e, FeeForwarderError::TargetNotAllowed);
     }
 
+    // OpenZeppelin would keep a fee addressed to the forwarder, and nothing
+    // here could ever pass it on.
+    if *fee_recipient == e.current_contract_address() {
+        panic_with_error!(e, FeeForwarderError::InvalidRecipient);
+    }
     collect_fee(
         e,
         fee_token,
@@ -266,57 +280,10 @@ fn collect_and_invoke(
         expiration_ledger,
         user,
         fee_recipient,
+        FeeAbstractionApproval::Eager,
     );
 
     let result = e.invoke_contract::<Val>(target_contract, target_fn, target_args.clone());
     emit_forward_executed(e, user, target_contract, target_fn, target_args);
     result
-}
-
-/// Collects `fee_amount` of `fee_token` from `user` to `fee_recipient` with
-/// OpenZeppelin's Eager approval as of stellar-contracts#873: approve
-/// `max_fee_amount`, pull all of it to the forwarder, pay the fee, refund the
-/// rest. The pull consumes the allowance. The fee-token allowlist check is
-/// left out: this forwarder has no admin, so its allowlist is never enabled.
-///
-/// # Errors
-/// - `FeeAbstractionError::InvalidUser` if `user` is the forwarder.
-/// - `FeeForwarderError::InvalidRecipient` if `fee_recipient` is the
-///   forwarder. Upstream skips that payment, but this forwarder has no sweep,
-///   so the fee would be stuck.
-/// - `FeeAbstractionError::InvalidFeeBounds` if `fee_amount` is not above
-///   zero or exceeds `max_fee_amount`.
-/// - The token's own error if `user` holds less than `max_fee_amount`.
-///
-/// # Events
-/// - [`FeeCollected`](stellar_fee_abstraction::FeeCollected): the fee moved
-///   from `user` to `fee_recipient`.
-fn collect_fee(
-    e: &Env,
-    fee_token: &Address,
-    fee_amount: i128,
-    max_fee_amount: i128,
-    expiration_ledger: u32,
-    user: &Address,
-    fee_recipient: &Address,
-) {
-    let forwarder = e.current_contract_address();
-    if *user == forwarder {
-        panic_with_error!(e, FeeAbstractionError::InvalidUser);
-    }
-    if *fee_recipient == forwarder {
-        panic_with_error!(e, FeeForwarderError::InvalidRecipient);
-    }
-    validate_fee_bounds(e, fee_amount, max_fee_amount);
-
-    let token = token::Client::new(e, fee_token);
-    token.approve(user, &forwarder, &max_fee_amount, &expiration_ledger);
-    token.transfer_from(&forwarder, user, &forwarder, &max_fee_amount);
-    token.transfer(&forwarder, fee_recipient, &fee_amount);
-    let remainder = max_fee_amount - fee_amount;
-    if remainder > 0 {
-        token.transfer(&forwarder, user, &remainder);
-    }
-
-    emit_fee_collected(e, user, fee_recipient, fee_token, fee_amount);
 }

@@ -163,8 +163,8 @@ impl MockRouter {
 }
 
 /// OpenZeppelin's permissionless fee forwarder example, verbatim in logic:
-/// the recipient is unsigned, the leftover allowance is kept, and any target
-/// is called.
+/// the recipient is unsigned and any target is called. Built on the pinned
+/// v0.9.0 helper, so its Eager collection consumes the whole approval.
 #[contract]
 struct OzExampleForwarder;
 
@@ -948,12 +948,14 @@ fn a_standalone_approve_cannot_be_spent_through_a_forward() {
 }
 
 #[test]
-fn the_oz_example_forwarder_leaks_a_leftover_to_anyone() {
-    // Why the consumed allowance and the refusal exist. The OpenZeppelin
-    // example on the released 0.7.2 helper keeps `max_fee_amount -
-    // fee_amount` approved after a forward, and calls any target, so another
-    // user's forward can spend that leftover (OpenZeppelin issue #875, fixed
-    // by #873 on the unreleased v0.9.0 branch).
+fn the_oz_example_forwarder_spends_an_allowance_granted_outside_a_forward() {
+    // Why the refusal still exists on the v0.9.0 helper. OpenZeppelin #873
+    // (issue #875) makes the Eager collection consume the whole approval, so
+    // a forward no longer leaves a leftover behind. The example still calls
+    // any target, though, so an allowance a user grants the forwarder
+    // directly, as a stolen session key could, is spendable by anyone's
+    // forward. This forwarder refuses that target (see
+    // `a_standalone_approve_cannot_be_spent_through_a_forward`).
     let e = Env::default();
     let token_b = new_token(&e);
     let token_a = new_token(&e);
@@ -967,7 +969,7 @@ fn the_oz_example_forwarder_leaks_a_leftover_to_anyone() {
     let client = OzExampleForwarderClient::new(&e, &forwarder);
     e.mock_all_auths();
 
-    // The victim pays 0.4 of a 1 cap in token B.
+    // The victim pays 0.4 of a 1 cap in token B: the fix leaves no leftover.
     let probe_args: Vec<Val> = (
         victim.clone(),
         token_b.address.clone(),
@@ -986,19 +988,18 @@ fn the_oz_example_forwarder_leaks_a_leftover_to_anyone() {
         &victim,
         &relayer,
     );
-    assert_eq!(token_b.allowance(&victim, &forwarder), MAX_FEE - FEE);
+    assert_eq!(token_b.allowance(&victim, &forwarder), 0);
+    assert_eq!(token_b.balance(&victim), BALANCE - FEE);
+
+    // The victim then approves the forwarder directly, outside any forward.
+    token_b.approve(&victim, &forwarder, &MAX_FEE, &EXPIRATION);
 
     // The attacker pays in token A and targets token B's transfer_from. The
     // example requires the relayer's authorization first, so the attacker
     // relays from a second address of their own.
     let attacker_relayer = Address::generate(&e);
-    let drain: Vec<Val> = (
-        forwarder.clone(),
-        victim.clone(),
-        attacker.clone(),
-        MAX_FEE - FEE,
-    )
-        .into_val(&e);
+    let drain: Vec<Val> =
+        (forwarder.clone(), victim.clone(), attacker.clone(), MAX_FEE).into_val(&e);
     client.forward(
         &token_a.address,
         &FEE,
@@ -1011,6 +1012,6 @@ fn the_oz_example_forwarder_leaks_a_leftover_to_anyone() {
         &attacker_relayer,
     );
 
-    assert_eq!(token_b.balance(&attacker), MAX_FEE - FEE);
-    assert_eq!(token_b.balance(&victim), BALANCE - MAX_FEE);
+    assert_eq!(token_b.balance(&attacker), MAX_FEE);
+    assert_eq!(token_b.balance(&victim), BALANCE - FEE - MAX_FEE);
 }
