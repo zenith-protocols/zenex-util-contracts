@@ -41,31 +41,43 @@ and then call `target_contract.target_fn(target_args)` and return its result.
 
 `fee_amount` is the relayer's, at most the cap and above zero. Unlike OpenZeppelin's example, the
 user signs `fee_recipient` (index 3 of both projections), so a signature pays only the recipient it
-names. The fee moves through an allowance to the forwarder, and the forwarder is the direct caller of
-its target, so two rules keep that allowance from being spent by anyone else: the leftover is reset
-to zero right after the pull, before the target runs, and `transfer_from` and `burn_from` are refused
-as a target on every contract (`TargetNotAllowed`, 6001). The OpenZeppelin example keeps the
+names; the forwarder itself cannot be the recipient (`InvalidRecipient`, 6002).
+
+The fee moves through an allowance to the forwarder, collected the way OpenZeppelin's Eager approval
+does it after [stellar-contracts#873](https://github.com/OpenZeppelin/stellar-contracts/pull/873)
+(the fix for issue #875): the user approves the cap, the forwarder pulls the whole cap, pays the fee
+and refunds the rest. The pull consumes the allowance before the target runs, and the user's balance
+must cover the cap, not only the fee. That change is only on OpenZeppelin's unreleased v0.9.0 branch
+(soroban-sdk 27), so it is copied here against the released 0.7.2 crate until v0.9.0 ships. The
+forwarder is the direct caller of its target, so `transfer_from` and `burn_from` are also refused as
+a target on every contract (`TargetNotAllowed`, 6001): an allowance a wallet grants the forwarder
+outside a forward can never be spent through one. The released OpenZeppelin example keeps the
 leftover and calls any target, so another user's forward can spend it (see the
 `the_oz_example_forwarder_leaks_a_leftover_to_anyone` test).
 
-For a Zenex order the wallet signs one tree rooted at the forwarder call: `approve(forwarder, cap)`,
-`approve(forwarder, 0)`, and `market.create_order` with its escrow `transfer`. When the target is the
-market router, the router's frames need no wallet authorization and are not part of it.
+For a Zenex order the wallet signs one tree rooted at the forwarder call: `approve(forwarder, cap)`
+and `market.create_order` with its escrow `transfer`. When the target is the market router, the
+router's frames need no wallet authorization and are not part of it.
 
 Testnet run on 2026-09-30 against testnet-v3 (router `CAZ4DNYW…`, market `CCOIDO46…`, fee
-recipient `GBIBH5UV…`), with real signatures. The relayer set the fee and, for `forward_unsafe`, the
-keeper and a fresh price after signing; every run left the allowance at zero:
+recipient `GBIBH5UV…`) through the relay stack (backend, OZ relayer, zenex plugin in forwarder mode),
+with real signatures. The relay set the fee and, for `forward_unsafe`, the keeper and a fresh price
+after signing. Every run pulled the full 1 USDC cap, refunded the cap minus the fee, and left the
+allowance and the forwarder's balance at zero:
 
-| Trader | Flow | Transaction |
+| Signer | Flow | Transaction |
 |---|---|---|
-| G-account | open: `forward_unsafe` → `create_and_fill` | b2f8a44f53380e5b50266dcd827a7339f621b215d3368757259fb89e01eca47a |
-| Smart account (canonical wasm, ed25519 signer) | open: `forward_unsafe` → `create_and_fill` | 6396b0afa29eccead783e49ea88222ab649cce018ba5ae9bdb3601e236cfb541 |
-| G-account | limit: `forward` → `multicall` | 9dd15fea8de217e70cf1e9d38f2b6dfe738dacf790c114b643b8e79ae88cafdb |
-| Smart account | limit: `forward` → `multicall` | d209f20ddcc917b8f5e1df25c749f5d82f50cc7e872cf15b0453a939a3759aaf |
-| G-account | cancel: `forward` → `multicall` | 78652acb81f53b361f80d447d093860c45c57b61123a7172dc3da38ef5033b64 |
-| Smart account | cancel: `forward` → `multicall` | 70975c5bcad1f6cce994bbf46c2c3f727081daa1a362888199f3e0b7cc29c8c2 |
-| G-account | close: `forward_unsafe` → `create_and_try_fill` | 4a02de86c51a61432a87646b7e44b1e582bf882c0f0046fc54d962803558966b |
-| Smart account | close: `forward_unsafe` → `create_and_try_fill` | 17197df29d31980cbc7676b61d361d9bf100dbd830b593bf3d03f28b4cf8daac |
+| G-account | open: `forward_unsafe` → `create_and_fill` | a0bafbc060a7d862d062b4f29a320561bfc6b78a1054942744ac5193a862b879 |
+| Smart account (canonical wasm, ed25519 signer) | limit: `forward` → `multicall` | de7779eaeb6de31ca687b8126bfc62104dd3cb7ec1c7c5af8fce95a12540e9de |
+| Smart account | cancel: `forward` → `multicall` | 02a27eb533d272b5c1c180a906a0fc491a33c491350a20fb0af69248ce3447f7 |
+| G-account | close: `forward_unsafe` → `create_and_try_fill` | cb4e049456a3122adb4b9ebde4a6c68c2b133ebb54819927df15d93703d1fbf8 |
+| Session key under session-policy v4 | open: `forward_unsafe` → `create_and_fill` | 3b6ed0359a458efc5c6e4535770f165506a183ba4ecc3827a7d90ac9e933da74 |
+| Session key | limit: `forward` → `multicall` | ae2f1fcf70a2ccb4dea552f1251d9436d1fe69fb0c086417697f382eff7dc48b |
+| Session key | cancel: `forward` → `multicall` | 0151b683759ee39898e5453e2898f773e13e9786f62f7b4f3a493b81fcb6bb95 |
+| Session key | close: `forward_unsafe` → `create_and_try_fill` | 5db8f100e6f3604e7442cfa571e21efbf790a8975d08e762517be8460e6a44df |
+
+A session-signed forward paying another recipient fails simulation with `Error(Auth,
+InvalidAction)` and v4's 4006 in the event log.
 
 ### Session policy
 
@@ -127,16 +139,19 @@ release has been cut from this workspace yet.
 
 | Contract | Testnet address | Deployed wasm sha256 |
 |---|---|---|
-| session-policy (v4) | CAIH4U3LUAP2HBHVGLG5F2BPMPOOX2IG56OJMBIDU35MFRUVPNAIGUG4 | d90488750ab71d43b649d02e31cdbd8eabb2f968acfdf8945579d9b404f00138 |
+| session-policy (v4) | CDWY6X5ACXOWLVH6YYVFNO2E6NCT2765HNJ3KTWXIAYBJRJPWEDZQP77 | d90488750ab71d43b649d02e31cdbd8eabb2f968acfdf8945579d9b404f00138 |
 | session-policy (v1) | CDUUHEXJY3EMQPGGRQS2KVJN7J3RM5HM2QWVUA5AGE3BRUOYW2MZPUAT | a98d1317f918b03af4e23f407eb99711eabda9c64629ae413427e7fa1c4f2135 |
 | referral | CAVUAS7CMIXOUXFND77EDNB5OOWBAM4AOAGV4NF6D4JQXAZAAERQDJQQ | 2d459a2180d91b5006ac0154cd97c4f4505165b39971ace0e534c3e549c5dc9d |
-| fee-forwarder | CBLRMGX3TKV57BQDSLV7AYFS6X67NJO7VIREJ2N7UGXRE5DYNV6DHVVC | ed348ebc7ff58d78cafa1bde0e9df568418e17171cbf8f2bb26468f1d6496b46 |
+| fee-forwarder | CBR2C7SAO5KRKVHAGVW7X3KPAPEMX3A6G72BH4WX762IZRU6L4JYZR25 | 3fee58c2724e0321b780ff69c33276898ac36406ab1a2eaf9fb942e0d25b0940 |
 
 The session-policy v4 row and the fee forwarder are built from this workspace. v4 (commit 32522a7)
-is deployed with the forwarder `CBLRMGX3…DHVVC`, the router `CAZ4DNYW…REIY4`, the market
-`CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee recipient `GBIBH5UV…MIKE4`.
-`CDRHA53H3U35NVQ3PHTUONMG7NSQFFRCQL5QBGTFGTZE5I2735KDLOHR` (wasm `6d4c3791…f956`) is the fee
-forwarder's superseded typed predecessor, a fee layer fixed to the market router. The session-policy
+is deployed with the forwarder `CBR2C7SA…ZR25`, the router `CAZ4DNYW…REIY4`, the market
+`CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee recipient `GBIBH5UV…MIKE4`. Superseded testnet
+deployments: the fee forwarder `CBLRMGX3TKV57BQDSLV7AYFS6X67NJO7VIREJ2N7UGXRE5DYNV6DHVVC` (wasm
+`ed348ebc…6b46`, reset-to-zero collection) with its v4 instance
+`CAIH4U3LUAP2HBHVGLG5F2BPMPOOX2IG56OJMBIDU35MFRUVPNAIGUG4`, and the typed predecessor
+`CDRHA53H3U35NVQ3PHTUONMG7NSQFFRCQL5QBGTFGTZE5I2735KDLOHR` (wasm `6d4c3791…f956`), a fee layer
+fixed to the market router. The session-policy
 v1 and referral testnet contracts were built from the legacy local sources
 (`soroban-smart-account/session-policy` @ 9cded45 and `soroban-referral`), which reproduce the
 deployed wasm byte-for-byte with rustc 1.93.1, stellar CLI 25.2.0 and their original lockfiles.
