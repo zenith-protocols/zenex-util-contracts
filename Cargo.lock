@@ -734,6 +734,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
 
 [[package]]
+name = "fee-forwarder"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-fee-abstraction",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1767,6 +1775,15 @@ checksum = "e3fd796d2412b3f5dc2573fd9233cf7748773d9f99faa956c16a94d1b2b5b67d"
 dependencies = [
  "serde",
  "serde-json-core",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "stellar-fee-abstraction"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e38b085cd58796d87b513e64a1972d059d10dc303534a0e57f0d698140ae081a"
+dependencies = [
  "soroban-sdk",
 ]
 
