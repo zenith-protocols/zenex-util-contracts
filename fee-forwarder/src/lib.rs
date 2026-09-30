@@ -1,320 +1,265 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
-//! Fee forwarder: a thin fee layer in front of the market router. Each entry
-//! point collects the relayer's fee in the fee token, then forwards to the
-//! router's matching non-fee flow and returns its result.
+//! Fee forwarder: a stateless fee-abstraction primitive. Deploy once, anyone
+//! uses it. A user pays the relayer in a token instead of native XLM, and the
+//! forwarder makes the user's call in the same invocation.
 //!
-//! # Signed prefix and unsigned tail
+//! # Signed projection
 //!
-//! The user authorizes the prefix `(calls, max_fee_amount, fee_expiration)`
-//! through `require_auth_for_args`. The submitter sets the tail after
-//! signing: `fee_amount`, at most `max_fee_amount` and known only once the
-//! final transaction is simulated, plus `keeper` and `price` for the fill
-//! flows.
+//! The user authorizes a projection of the arguments through
+//! `require_auth_for_args`:
 //!
-//! The wallet signs one tree rooted at the forwarder call. For a
-//! create-and-fill batch it is `approve(forwarder, max_fee_amount)`,
-//! `approve(forwarder, 0)` and `market.create_order`, with the order's
-//! `transfer(wallet, market, escrow)` under it. The router's non-fee flows
-//! need no wallet authorization, so their frames are not part of the tree.
+//! - [`FeeForwarderContract::forward`] signs `(fee_token, max_fee_amount,
+//!   expiration_ledger, fee_recipient, target_contract, target_fn,
+//!   target_args)`.
+//! - [`FeeForwarderContract::forward_unsafe`] signs the same projection
+//!   without `target_args`, so a relayer can refresh them after signing, such
+//!   as a fresh price update.
 //!
-//! # Fixed recipient and targets
+//! `fee_amount` stays outside both: the relayer sets it, at most
+//! `max_fee_amount`, once the final transaction is simulated. `fee_recipient`
+//! sits at index 3 of both projections.
 //!
-//! The router, the fee token and the fee recipient are fixed at deploy. A
-//! submitter cannot redirect the fee, so a signature over a fee cap only ever
-//! pays `fee_recipient`. The forwarder calls only the fee token (to collect
-//! and wipe) and the router's three non-fee flows. It has no generic call of
-//! its own.
+//! OpenZeppelin's forwarder leaves the recipient to the relayer. Here the
+//! user signs it, so a signature pays only the recipient it names, and a
+//! wallet policy can pin that recipient.
 //!
-//! An allowance to the forwarder cannot be spent through the router's generic
-//! calls. A contract is authorized only for the calls it makes directly, so a
-//! `transfer_from` with the forwarder as spender that the router makes on a
-//! batch's behalf fails: the forwarder never calls
-//! `authorize_as_current_contract`. The fee allowance is wiped before the
-//! router call in any case.
-
-mod dependencies;
-mod types;
+//! # Allowances
+//!
+//! The fee is collected through an allowance to the forwarder: the user
+//! approves `max_fee_amount`, the forwarder pulls `fee_amount` to
+//! `fee_recipient`. The forwarder calls the target directly, and a contract
+//! is authorized for the calls it makes directly, so a target of
+//! `token.transfer_from(forwarder, victim, …)` would spend any allowance the
+//! victim holds to the forwarder. Two rules close that:
+//!
+//! - The leftover allowance is reset to zero right after the pull, before
+//!   the target runs, so no allowance outlives the fee collection.
+//! - `transfer_from` and `burn_from`, the token functions that spend an
+//!   allowance, are refused as a target on every contract. An allowance a
+//!   user grants the forwarder outside a forward can therefore never be
+//!   spent through one.
+//!
+//! # `forward_unsafe`
+//!
+//! Unsigned `target_args` bind nothing at the root. The target flow must
+//! protect the user's intent itself: every call that moves the user's funds
+//! must require the user's own authorization on its exact arguments. A Zenex
+//! order does: `create_order` calls `user.require_auth()`, so its arguments
+//! are part of the signed tree whatever the relayer puts in `target_args`.
 
 #[cfg(test)]
 mod test;
 
-pub use types::{Call, Config};
-
-use dependencies::RouterClient;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, token, vec, Address,
-    Bytes, Env, IntoVal, Val, Vec,
+    contract, contracterror, contractimpl, panic_with_error, token, Address, Env, IntoVal, Symbol,
+    Val, Vec,
 };
-use stellar_fee_abstraction::{collect_fee, FeeAbstractionApproval};
-
-const DAY_IN_LEDGERS: u32 = 17280;
-const INSTANCE_EXTEND_AMOUNT: u32 = 30 * DAY_IN_LEDGERS; // ~30 days
-const INSTANCE_TTL_THRESHOLD: u32 = INSTANCE_EXTEND_AMOUNT - DAY_IN_LEDGERS; // refresh at ~29 days
+use stellar_fee_abstraction::{collect_fee, emit_forward_executed, FeeAbstractionApproval};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum FeeForwarderError {
-    /// The router, the fee token and the fee recipient are not three
-    /// distinct addresses.
-    InvalidConfig = 6001,
+    /// `target_fn` is `transfer_from` or `burn_from`, which spend an
+    /// allowance.
+    TargetNotAllowed = 6001,
 }
 
-#[contracttype]
-enum StorageKey {
-    Config,
-}
-
-/// Fee forwarder contract. It holds no funds; its config is fixed at deploy.
+/// Fee forwarder contract. It holds no funds and no state.
 #[contract]
 pub struct FeeForwarderContract;
 
 #[contractimpl]
 impl FeeForwarderContract {
-    /// Fixes the router, the fee token and the fee recipient for the
-    /// contract's lifetime. There is no admin and no setter.
-    ///
-    /// # Errors
-    ///
-    /// * `FeeForwarderError::InvalidConfig` - If any two of the three
-    ///   addresses are equal.
-    pub fn __constructor(e: Env, router: Address, fee_token: Address, fee_recipient: Address) {
-        if router == fee_token || router == fee_recipient || fee_token == fee_recipient {
-            panic_with_error!(&e, FeeForwarderError::InvalidConfig);
-        }
-        e.storage().instance().set(
-            &StorageKey::Config,
-            &Config {
-                router,
-                fee_token,
-                fee_recipient,
-            },
-        );
-    }
-
-    /// Collects the relayer fee from `user`, then runs the router's
-    /// `multicall(calls)` and returns its results. A failing call also
-    /// reverts the fee.
+    /// Collects `fee_amount` of `fee_token` from `user` to `fee_recipient`,
+    /// then calls `target_contract.target_fn(target_args)` and returns its
+    /// result. A failing target also reverts the fee.
     ///
     /// # Arguments
     ///
     /// * `e` - Access to the Soroban environment.
-    /// * `calls` - The batch, executed by the router front to back.
+    /// * `fee_token` - The token the fee is paid in.
+    /// * `fee_amount` - The fee, above zero and at most `max_fee_amount`.
+    /// * `max_fee_amount` - The fee cap the user signs.
+    /// * `expiration_ledger` - The fee allowance's live-until ledger, at or
+    ///   after execution.
+    /// * `target_contract` - The contract to call.
+    /// * `target_fn` - The function to call.
+    /// * `target_args` - The call's arguments.
     /// * `user` - The fee payer.
-    /// * `max_fee_amount` - The fee cap (token-dec).
-    /// * `fee_expiration` - The allowance's live-until ledger, at or after
-    ///   execution.
-    /// * `fee_amount` - The fee (token-dec). `0` skips it.
+    /// * `fee_recipient` - The fee payee.
     ///
     /// # Errors
     ///
-    /// * `FeeAbstractionError::InvalidFeeBounds` - If `fee_amount` is
-    ///   negative or above `max_fee_amount`.
+    /// * `FeeForwarderError::TargetNotAllowed` - If `target_fn` is
+    ///   `transfer_from` or `burn_from`.
+    /// * `FeeAbstractionError::InvalidFeeBounds` - If `fee_amount` is not
+    ///   above zero or exceeds `max_fee_amount`.
+    /// * `FeeAbstractionError::InvalidUser` - If `user` is the forwarder.
     ///
     /// # Events
     ///
     /// * topics - `["fee_collected", user: Address, recipient: Address]`
     /// * data - `[token: Address, amount: i128]`
+    /// * topics - `["forward_executed", user: Address, target_contract:
+    ///   Address]`
+    /// * data - `[target_fn: Symbol, target_args: Vec<Val>]`
     ///
     /// # Notes
     ///
-    /// * Authorization for `user` is required over `(calls, max_fee_amount,
-    ///   fee_expiration)`. The submitter sets `fee_amount`.
-    pub fn multicall_with_fee(
+    /// * Authorization for `user` is required over `(fee_token,
+    ///   max_fee_amount, expiration_ledger, fee_recipient, target_contract,
+    ///   target_fn, target_args)`.
+    pub fn forward(
         e: Env,
-        calls: Vec<Call>,
-        user: Address,
-        max_fee_amount: i128,
-        fee_expiration: u32,
+        fee_token: Address,
         fee_amount: i128,
-    ) -> Vec<Val> {
-        let config = read_config(&e);
-        authorize_and_collect_fee(
-            &e,
-            &config,
-            &calls,
-            &user,
-            max_fee_amount,
-            fee_expiration,
-            fee_amount,
+        max_fee_amount: i128,
+        expiration_ledger: u32,
+        target_contract: Address,
+        target_fn: Symbol,
+        target_args: Vec<Val>,
+        user: Address,
+        fee_recipient: Address,
+    ) -> Val {
+        user.require_auth_for_args(
+            (
+                fee_token.clone(),
+                max_fee_amount,
+                expiration_ledger,
+                fee_recipient.clone(),
+                target_contract.clone(),
+                target_fn.clone(),
+                target_args.clone(),
+            )
+                .into_val(&e),
         );
-        RouterClient::new(&e, &config.router).multicall(&calls)
+        collect_and_invoke(
+            &e,
+            &fee_token,
+            fee_amount,
+            max_fee_amount,
+            expiration_ledger,
+            &target_contract,
+            &target_fn,
+            &target_args,
+            &user,
+            &fee_recipient,
+        )
     }
 
-    /// Collects the relayer fee from `user`, then runs the router's
-    /// `create_and_fill(calls, user, keeper, price)` and returns its results.
-    /// A failing fill also unwinds the fee.
+    /// Acts as [`Self::forward`], but the user's authorization leaves out
+    /// `target_args`, so the relayer can refresh them after signing.
     ///
     /// # Arguments
     ///
-    /// * `e` - Access to the Soroban environment.
-    /// * `calls` - The create-and-fill batch. `calls[0]` is the order to
-    ///   fill.
-    /// * `user` - The trader and fee payer.
-    /// * `max_fee_amount` - The fee cap (token-dec).
-    /// * `fee_expiration` - The allowance's live-until ledger.
-    /// * `fee_amount` - The fee (token-dec). `0` skips it.
-    /// * `keeper` - The fill-reward recipient.
-    /// * `price` - The price update.
+    /// * Refer to [`Self::forward`].
     ///
     /// # Errors
     ///
-    /// * `FeeAbstractionError::InvalidFeeBounds` - If `fee_amount` is
-    ///   negative or above `max_fee_amount`.
+    /// * Refer to [`Self::forward`].
     ///
     /// # Events
     ///
-    /// * topics - `["fee_collected", user: Address, recipient: Address]`
-    /// * data - `[token: Address, amount: i128]`
+    /// * Refer to [`Self::forward`].
     ///
     /// # Notes
     ///
-    /// * Authorization for `user` is required over `(calls, max_fee_amount,
-    ///   fee_expiration)`. The submitter sets `fee_amount`, `keeper` and
-    ///   `price`.
-    pub fn create_and_fill_with_fee(
+    /// * Authorization for `user` is required over `(fee_token,
+    ///   max_fee_amount, expiration_ledger, fee_recipient, target_contract,
+    ///   target_fn)`.
+    /// * The target flow must require the user's own authorization on every
+    ///   call that moves the user's funds. Otherwise a relayer can supply
+    ///   arbitrary `target_args` and still collect the fee.
+    pub fn forward_unsafe(
         e: Env,
-        calls: Vec<Call>,
-        user: Address,
-        max_fee_amount: i128,
-        fee_expiration: u32,
+        fee_token: Address,
         fee_amount: i128,
-        keeper: Address,
-        price: Bytes,
-    ) -> Vec<Val> {
-        let config = read_config(&e);
-        authorize_and_collect_fee(
-            &e,
-            &config,
-            &calls,
-            &user,
-            max_fee_amount,
-            fee_expiration,
-            fee_amount,
-        );
-        RouterClient::new(&e, &config.router).create_and_fill(&calls, &user, &keeper, &price)
-    }
-
-    /// Collects the relayer fee from `user`, then runs the router's
-    /// `create_and_try_fill(calls, user, keeper, price)` and returns its
-    /// results. A resting fill keeps the fee.
-    ///
-    /// # Arguments
-    ///
-    /// * `e` - Access to the Soroban environment.
-    /// * `calls` - The create-and-fill batch. `calls[0]` is the order to
-    ///   fill.
-    /// * `user` - The trader and fee payer.
-    /// * `max_fee_amount` - The fee cap (token-dec).
-    /// * `fee_expiration` - The allowance's live-until ledger.
-    /// * `fee_amount` - The fee (token-dec). `0` skips it.
-    /// * `keeper` - The fill-reward recipient.
-    /// * `price` - The price update.
-    ///
-    /// # Errors
-    ///
-    /// * `FeeAbstractionError::InvalidFeeBounds` - If `fee_amount` is
-    ///   negative or above `max_fee_amount`.
-    ///
-    /// # Events
-    ///
-    /// * topics - `["fee_collected", user: Address, recipient: Address]`
-    /// * data - `[token: Address, amount: i128]`
-    ///
-    /// # Notes
-    ///
-    /// * Authorization for `user` is required over `(calls, max_fee_amount,
-    ///   fee_expiration)`. The submitter sets `fee_amount`, `keeper` and
-    ///   `price`.
-    pub fn create_and_try_fill_with_fee(
-        e: Env,
-        calls: Vec<Call>,
-        user: Address,
         max_fee_amount: i128,
-        fee_expiration: u32,
-        fee_amount: i128,
-        keeper: Address,
-        price: Bytes,
-    ) -> Vec<Val> {
-        let config = read_config(&e);
-        authorize_and_collect_fee(
-            &e,
-            &config,
-            &calls,
-            &user,
-            max_fee_amount,
-            fee_expiration,
-            fee_amount,
+        expiration_ledger: u32,
+        target_contract: Address,
+        target_fn: Symbol,
+        target_args: Vec<Val>,
+        user: Address,
+        fee_recipient: Address,
+    ) -> Val {
+        user.require_auth_for_args(
+            (
+                fee_token.clone(),
+                max_fee_amount,
+                expiration_ledger,
+                fee_recipient.clone(),
+                target_contract.clone(),
+                target_fn.clone(),
+            )
+                .into_val(&e),
         );
-        RouterClient::new(&e, &config.router).create_and_try_fill(&calls, &user, &keeper, &price)
-    }
-
-    /// Returns the router, the fee token and the fee recipient fixed at
-    /// deploy.
-    pub fn get_config(e: Env) -> Config {
-        read_config(&e)
+        collect_and_invoke(
+            &e,
+            &fee_token,
+            fee_amount,
+            max_fee_amount,
+            expiration_ledger,
+            &target_contract,
+            &target_fn,
+            &target_args,
+            &user,
+            &fee_recipient,
+        )
     }
 }
 
-/// Returns the config and keeps the instance, with its code, alive.
-fn read_config(e: &Env) -> Config {
-    e.storage()
-        .instance()
-        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_EXTEND_AMOUNT);
-    // The constructor always writes the config.
-    e.storage().instance().get(&StorageKey::Config).unwrap()
-}
-
-/// Binds `user`'s authorization to the signed prefix and collects the
-/// relayer fee into the fixed recipient. A zero `fee_amount` collects
-/// nothing.
-///
-/// The authorization pins `(calls, max_fee_amount, fee_expiration)`. The
-/// whole batch signs as one value, so touching any call forces a re-sign.
-/// `fee_amount`, `keeper` and `price` stay outside the signature for the
-/// submitter to set.
+/// Refuses the allowance-spending token functions, collects the fee, resets
+/// the leftover allowance, then calls the target and returns its result.
 ///
 /// # Errors
+/// - `FeeForwarderError::TargetNotAllowed` if `target_fn` is `transfer_from`
+///   or `burn_from`.
 /// - Refer to [`collect_fee`] errors.
 ///
 /// # Events
-/// - [`FeeCollected`](stellar_fee_abstraction::FeeCollected): the fee moved
-///   from `user` to the fixed recipient.
-fn authorize_and_collect_fee(
+/// - [`FeeCollected`](stellar_fee_abstraction::FeeCollected) and
+///   [`ForwardExecuted`](stellar_fee_abstraction::ForwardExecuted).
+fn collect_and_invoke(
     e: &Env,
-    config: &Config,
-    calls: &Vec<Call>,
-    user: &Address,
-    max_fee_amount: i128,
-    fee_expiration: u32,
+    fee_token: &Address,
     fee_amount: i128,
-) {
-    user.require_auth_for_args(vec![
-        e,
-        calls.into_val(e),
-        max_fee_amount.into_val(e),
-        fee_expiration.into_val(e),
-    ]);
-    if fee_amount == 0 {
-        return;
+    max_fee_amount: i128,
+    expiration_ledger: u32,
+    target_contract: &Address,
+    target_fn: &Symbol,
+    target_args: &Vec<Val>,
+    user: &Address,
+    fee_recipient: &Address,
+) -> Val {
+    // The forwarder calls the target directly, so it would be the authorized
+    // spender of any `transfer_from` or `burn_from` the target names.
+    if *target_fn == Symbol::new(e, "transfer_from") || *target_fn == Symbol::new(e, "burn_from") {
+        panic_with_error!(e, FeeForwarderError::TargetNotAllowed);
     }
-    // The allowance lives until the signed `fee_expiration`, not a
-    // ledger-derived value, which would drift between the auth-discovery
-    // simulation and execution and break the signed `approve`.
+
     collect_fee(
         e,
-        &config.fee_token,
+        fee_token,
         fee_amount,
         max_fee_amount,
-        fee_expiration,
+        expiration_ledger,
         user,
-        &config.fee_recipient,
+        fee_recipient,
         FeeAbstractionApproval::Eager,
     );
-    // The residual allowance, `max_fee_amount - fee_amount`, is wiped before
-    // the router runs, so no fee allowance outlives the collection.
-    let forwarder = e.current_contract_address();
-    token::Client::new(e, &config.fee_token).approve(user, &forwarder, &0, &fee_expiration);
+    // The leftover allowance, `max_fee_amount - fee_amount`, is reset before
+    // the target runs, so no fee allowance outlives the collection.
+    token::Client::new(e, fee_token).approve(
+        user,
+        &e.current_contract_address(),
+        &0,
+        &expiration_ledger,
+    );
+
+    let result = e.invoke_contract::<Val>(target_contract, target_fn, target_args.clone());
+    emit_forward_executed(e, user, target_contract, target_fn, target_args);
+    result
 }
