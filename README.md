@@ -4,12 +4,14 @@ Small standalone contracts for Zenex, a perpetual futures exchange on
 [Stellar](https://stellar.org) (Soroban). They sit outside the core protocol in
 [zenex-contracts](https://github.com/zenith-protocols/zenex-contracts) and do not
 link against it; session-policy matches the market, fee-forwarder and router functions it allows by name.
+The market router is ported here from zenex-contracts without its fee functions.
 
 ## Contracts
 
 | Crate | Description |
 |-------|-------------|
 | `fee-forwarder` | Generic fee forwarder: pays a relayer in a token under a signed fee cap and recipient, then calls the target |
+| `market-router` | Stateless call router: batching (`multicall`, `multicall_try`) and create-and-fill (`create_and_fill`, `create_and_try_fill`); the fee forwarder's target |
 | `referral` | Referral attestation: a wallet attests which wallet referred it |
 | `session-policy` | Smart-account policy for trading session keys: trade-only, relay fees only through the fee forwarder to a pinned recipient |
 
@@ -89,6 +91,33 @@ build with an empty parameter:
 A session-signed forward paying another recipient fails simulation with `Error(Auth,
 InvalidAction)` and v4's 4006 in the event log.
 
+### Market router
+
+Ported from zenex-contracts `market-router` at `c93bc95` (unchanged since the mainnet release
+`644a4c4`) with the three `*_with_fee` functions removed. It keeps `multicall`, `multicall_try`,
+`create_and_fill` and `create_and_try_fill`; their names, arguments, return shapes and the `Call`
+type match the deployed router's spec exactly. It holds no funds and collects no fees: the fee
+forwarder collects them and calls these functions as its target. Its tests run against the release
+market WASM in `market-router/testdata/market.wasm` (zenex-contracts `wasm/market.wasm`, sha256
+`02aa342f…943c`, the testnet-v3 market on chain), including a forwarded fill through
+`fee-forwarder` → router → market.
+
+Testnet run on 2026-10-01 through the ported router `CAZFL7XZ…` and its v4 instance `CDUXY6JM…`,
+over the same relay stack:
+
+| Signer | Flow | Transaction |
+|---|---|---|
+| G-account | open: `forward_unsafe` → `create_and_fill` | b261f4f73ef6cbf59365b206d750dd1622e4ca9918f2265e89a7be147dd8daa6 |
+| Smart account | open: `forward_unsafe` → `create_and_fill` | f7614e2fd1be5d8552fd4d1832fc9f342c5dc936de1d9001515c26c37de8b2c1 |
+| G-account | limit, cancel: `forward` → `multicall` | 95f71e39bc79871a7e28eb510b6e2661a2adca61651d15ce8a3248e225260c1e, ef1a3b07896aa739a663afea6962f847368199e75969ead85d4344616337e1b1 |
+| Smart account | limit, cancel: `forward` → `multicall` | d679691b05c1ecf6793228464ab260072a8a08000c9264c944d2a8e54f80ec32, 7a0e2825bfd23a568a4d43f2e5765061af74ea15b555782e2d00c7c9f054ae34 |
+| G-account, smart account | close: `forward_unsafe` → `create_and_try_fill` | 6dc0126cf84af7790502e5b2074b5c06b08be72b31dea017be9ad0450467246f, 29e4b8f38cfb7ce6cc9dd828ffb8f424c9f6839e63d868c751456d822d3524c4 |
+| Rule 0 installs v4 | enable: `forward` → `multicall(add_context_rule)` | 60d2f5d86ff54832bac296b8babeb86dcdbb0079e88fbb499620344fbbc760f7 |
+| Session key under v4 | open: `forward_unsafe` → `create_and_fill` | 120c53c11fb6fdfc18a5292a533d58e3ce8e188d70d7947ff0cdc197d73d746b |
+| Session key | limit, cancel: `forward` → `multicall` | 86a81be2d3cac84fb6828f19028365b00358529a102b14330257c0e2de3a006e, 855fff85385f5d6227c6a09b727bd4bde249547acdf3e5dd22ba8b7bba156ba7 |
+| Session key | close: `forward_unsafe` → `create_and_try_fill` | c06424dbfef919ef20be374ba4abaa495a5ea27b4d7b0ea70f30c85c4d6804e5 |
+| Rule 0 | disable: `forward` → `multicall(remove_context_rule)` | db5562f4900db6677e29eda1f7f8ab8c337b865e1ffce65c8bf626b1fa0f4ce2 |
+
 ### Session policy
 
 A trading session key is an ed25519 key registered on the smart account under a `Default` context
@@ -149,15 +178,18 @@ release has been cut from this workspace yet.
 
 | Contract | Testnet address | Deployed wasm sha256 |
 |---|---|---|
-| session-policy (v4) | CBHJ72ERR2FOSCXIKQ5ZPEZVSJZID7QZAKOTXYNGXUI3EEWRQCRYNCCU | bef197d9c1df2e4d03bfee2621a853d5d10c32be92ccd57fea47ba226ae34d8c |
+| market-router | CAZFL7XZGYND5MLKQB4SCGY7OUAML6Z4DW2CU7BUXNMRWJ4M72C45EAW | e60009c4c26f784fa878a55031aeb857e5edfb70a61347e037019b6ab946f283 |
+| session-policy (v4) | CDUXY6JMMWKDI7WZBBD4ENKKPJZXN7KTUBAWMGNSJPP6O5JEUNXGE4FO | bef197d9c1df2e4d03bfee2621a853d5d10c32be92ccd57fea47ba226ae34d8c |
 | session-policy (v1) | CDUUHEXJY3EMQPGGRQS2KVJN7J3RM5HM2QWVUA5AGE3BRUOYW2MZPUAT | a98d1317f918b03af4e23f407eb99711eabda9c64629ae413427e7fa1c4f2135 |
 | referral | CAVUAS7CMIXOUXFND77EDNB5OOWBAM4AOAGV4NF6D4JQXAZAAERQDJQQ | 2d459a2180d91b5006ac0154cd97c4f4505165b39971ace0e534c3e549c5dc9d |
 | fee-forwarder | CBWLTLD5JJGAVSR2KH3UY42WXH3YYORZW54TA74EIGOPWA74LJGYE6C2 | c7dd9bae43bea382e4890a86c9d41153607fe9ac465a207dccfd2d0b66c0d2ba |
 
 The session-policy v4 row and the fee forwarder are built from this workspace on OpenZeppelin
-`df602b6` and soroban-sdk 27.0.6 (commit 1b037f0). v4 is deployed with the forwarder
-`CBWLTLD5…E6C2`, the router `CAZ4DNYW…REIY4`, the market `CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and
-the fee recipient `GBIBH5UV…MIKE4`. Superseded testnet deployments: the fee forwarder
+`df602b6` and soroban-sdk 27.0.6 (commit 1b037f0), the market router from commit f2bd687. v4 is
+deployed with the forwarder `CBWLTLD5…E6C2`, the ported router `CAZFL7XZ…5EAW`, the market
+`CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee recipient `GBIBH5UV…MIKE4`. Superseded testnet
+deployments: the v4 instance `CBHJ72ERR2FOSCXIKQ5ZPEZVSJZID7QZAKOTXYNGXUI3EEWRQCRYNCCU` (same wasm),
+pinned to the zenex-contracts router `CAZ4DNYW…REIY4`; the fee forwarder
 `CBR2C7SAO5KRKVHAGVW7X3KPAPEMX3A6G72BH4WX762IZRU6L4JYZR25` (wasm `3fee58c2…0940`, a copy of the
 upstream Eager collection on soroban-sdk 26) with its v4 instance
 `CDWY6X5ACXOWLVH6YYVFNO2E6NCT2765HNJ3KTWXIAYBJRJPWEDZQP77` (wasm `d9048875…0138`), the fee forwarder `CBLRMGX3TKV57BQDSLV7AYFS6X67NJO7VIREJ2N7UGXRE5DYNV6DHVVC` (wasm
