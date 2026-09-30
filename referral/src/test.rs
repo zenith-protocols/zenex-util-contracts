@@ -6,7 +6,7 @@ use soroban_sdk::{
 };
 
 #[test]
-fn attribute_returns_caller_and_referrer() {
+fn attribute_returns_nothing() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -16,9 +16,8 @@ fn attribute_returns_caller_and_referrer() {
     let caller = Address::generate(&env);
     let referrer = Address::generate(&env);
 
-    let result = client.attribute(&caller, &referrer);
-
-    assert_eq!(result, (caller.clone(), referrer.clone()));
+    // The call succeeds with a unit result: the event is the only output.
+    let () = client.attribute(&caller, &referrer);
 }
 
 #[test]
@@ -46,11 +45,16 @@ fn attribute_rejects_self_referral() {
 
     let caller = Address::generate(&env);
 
-    // caller == referrer must error with ReferralError::SelfReferral.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        client.attribute(&caller, &caller);
-    }));
-    assert!(result.is_err(), "self-referral must be rejected");
+    // caller == referrer must error with ReferralError::SelfReferral, 7001.
+    let self_referral = soroban_sdk::Error::from_contract_error(7001);
+    assert_eq!(
+        soroban_sdk::Error::from(ReferralError::SelfReferral),
+        self_referral
+    );
+    assert_eq!(
+        client.try_attribute(&caller, &caller),
+        Err(Ok(self_referral))
+    );
 }
 
 #[test]

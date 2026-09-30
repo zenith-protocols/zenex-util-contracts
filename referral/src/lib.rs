@@ -11,11 +11,15 @@ use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, panic_with_error, Address, Env,
 };
 
+// Codes sit in the 7000 range, clear of every other contract that can share a
+// call tree with this one (see "Error codes" in the README). Plain comments,
+// not doc comments: those would land in the contract spec.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ReferralError {
-    SelfReferral = 1,
+    // `caller` names itself as `referrer`.
+    SelfReferral = 7001,
 }
 
 /// Emitted on each successful attribution.
@@ -37,8 +41,8 @@ pub struct ReferralContract;
 
 #[contractimpl]
 impl ReferralContract {
-    /// Attests that `caller` was referred by `referrer` and returns
-    /// `(caller, referrer)`, which a simulation can read as a pre-flight.
+    /// Attests that `caller` was referred by `referrer`. The event is the
+    /// only output: a successful simulation is the pre-flight.
     ///
     /// # Arguments
     ///
@@ -53,18 +57,16 @@ impl ReferralContract {
     /// # Events
     ///
     /// * topics - `["attributed", referee: Address, referrer: Address]`
-    pub fn attribute(env: Env, caller: Address, referrer: Address) -> (Address, Address) {
+    pub fn attribute(env: Env, caller: Address, referrer: Address) {
         caller.require_auth();
         if caller == referrer {
             panic_with_error!(&env, ReferralError::SelfReferral);
         }
 
         Attributed {
-            referee: caller.clone(),
-            referrer: referrer.clone(),
+            referee: caller,
+            referrer,
         }
         .publish(&env);
-
-        (caller, referrer)
     }
 }

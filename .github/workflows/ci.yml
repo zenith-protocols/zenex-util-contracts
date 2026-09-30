@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: fmt and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # With no argument, rustup installs the toolchain rust-toolchain.toml
+      # pins, with its wasm32v1-none target and rustfmt.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all -- --check
+      # Native tests need no built WASM: the router suite loads the committed
+      # market-router/testdata/market.wasm.
+      - run: cargo test --locked --workspace

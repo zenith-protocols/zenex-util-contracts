@@ -15,20 +15,20 @@ The market router is ported here from zenex-contracts without its fee functions.
 | `referral` | Referral attestation: a wallet attests which wallet referred it |
 | `session-policy` | Smart-account policy for trading session keys: trade-only, relay fees only through the fee forwarder to a pinned recipient |
 
-This source is session-policy v4, deployed on testnet for review; it needs review before any mainnet
-deploy. The workspace depends on OpenZeppelin stellar-contracts at an UNRELEASED, UNAUDITED commit
-(`df602b6`, the head of their `v0.9.0` branch) and builds with soroban-sdk 27.0.6; see the fee
-forwarder below. The older testnet address below runs v1, whose transfer-destination guard is bypassable
-(unrestricted `approve`, muxed `to` addresses, the router's fee envelope), and whose error codes
-differ from v4's.
+This source is session-policy v4; the testnet instance runs its previous build (see Deployment). It
+needs review before any mainnet deploy. The workspace depends on OpenZeppelin stellar-contracts at
+an UNRELEASED, UNAUDITED commit (`df602b6`, the head of their `v0.9.0` branch) and builds with
+soroban-sdk 27.0.6; see the fee forwarder below. The older testnet address below runs v1, whose
+transfer-destination guard is bypassable (unrestricted `approve`, muxed `to` addresses, the
+router's fee envelope), and whose error codes differ from v4's.
 
 ### Referral
 
-`attribute(caller: Address, referrer: Address) -> (Address, Address)` requires `caller`'s
-authorization and fails with `ReferralError::SelfReferral` (1) when `caller == referrer`. It emits
-`Attributed { referee, referrer }` with topics `("attributed", referee, referrer)`, so indexers can
-filter on either side, and returns `(caller, referrer)` for simulation pre-flight. The event log is
-the record: the contract has no storage, no admin and no constructor.
+`attribute(caller: Address, referrer: Address)` requires `caller`'s authorization and fails with
+`ReferralError::SelfReferral` (7001) when `caller == referrer`. It emits `Attributed { referee,
+referrer }` with topics `("attributed", referee, referrer)`, so indexers can filter on either side,
+and returns nothing: a successful simulation is the pre-flight. The event log is the record: the
+contract has no storage, no admin and no constructor.
 
 ### Fee forwarder
 
@@ -122,8 +122,8 @@ over the same relay stack:
 
 A trading session key is an ed25519 key registered on the smart account under a `Default` context
 rule with a `valid_until`. The constructor fixes the fee forwarder, the router, the markets, the
-collateral token and the fee recipient; there is no admin and no storage, and a rule installs the
-policy with an empty parameter. The key may sign:
+collateral token and the fee recipient, one instance-storage entry each; there is no admin and no
+per-account state, and a rule installs the policy with an empty parameter. The key may sign:
 
 - `forward` / `forward_unsafe` on the forwarder, when the signed projection
   `[fee_token, max_fee_amount, expiration_ledger, fee_recipient, target_contract, target_fn(, target_args)]`
@@ -137,7 +137,12 @@ Everything else fails closed (`ContractNotAllowed` 4002, `FunctionNotAllowed` 40
 `TransferNotAllowed` 4004, `ApproveNotAllowed` 4005, `ForwardNotAllowed` 4006): the wallet itself,
 the router directly, the vault, other tokens, muxed or non-market destinations, and contract
 creation. A rejected context shows as `Error(Auth, InvalidAction)`, with the policy's code in the
-diagnostic event log. `get_config()` returns the deploy-time configuration.
+diagnostic event log.
+
+The configuration sits under the instance keys `forwarder`, `router`, `markets`, `token` and
+`recipient`, and `enforce` reads only the entries its branch checks. There is no getter, because
+every `enforce` instantiates the whole module and pays for each export: `stellar contract read --id
+<policy>` prints the instance entry.
 
 A forwarder allowance needs no cap: the forwarder refuses `transfer_from` and `burn_from` targets,
 so only its own fee step can spend it, under the wallet's root authorization, paying the recipient
@@ -168,13 +173,58 @@ Run the unit tests with:
 make test
 ```
 
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --all -- --check` and `cargo test --locked
+--workspace` on every push and pull request. The tests need no built WASM: the router suite loads the
+committed `market-router/testdata/market.wasm`.
+
+## Error codes
+
+A contract error surfaces as `Error(Contract, #code)` whichever contract in the call tree raised it,
+so each contract here takes codes no neighbour uses. The codes that can meet in a Zenex call tree:
+
+| Codes | Raised by |
+|---|---|
+| 1–15 | the host's built-in contracts, such as the Stellar Asset Contract |
+| 1, 600–900 | zenex-contracts (governance, factory, market, oracle, strategy vault, treasury) |
+| 100–411, 1000–1502, 2000–2203 | OpenZeppelin `stellar-tokens`, `stellar-contract-utils` and `stellar-access`, in zenex-contracts |
+| 3000–3227 | OpenZeppelin `stellar-accounts`: the smart account, its verifiers and policies |
+| 4001–4006 | `session-policy` |
+| 5000–5006 | OpenZeppelin `stellar-fee-abstraction` |
+| 6001–6002 | `fee-forwarder` |
+| 7001 | `referral` |
+
+`market-router` defines none: a failing call traps with its own error. OpenZeppelin's governance
+(4000–4104) and zk-email (6000–6001) modules reuse two of these ranges; nothing here links them.
+
+## Releases
+
+Pushing a version tag (`v1.2.3`) runs `.github/workflows/release.yml`: one job per contract on
+stellar.expert's reusable [soroban-build-workflow](https://github.com/stellar-expert/soroban-build-workflow),
+pinned to its v27.0.0 commit. Each job builds the contract with stellar-cli 27.0.0, publishes a
+GitHub release with the WASM, attests its build provenance and submits the WASM hash to
+stellar.expert, which then shows a contract running that exact WASM as verified against this source.
+
+- Verification needs the repository to be public (planned): stellar.expert reads the source, and
+  GitHub attests builds of private repositories only on Enterprise Cloud, so until then a tag run
+  publishes the releases and fails at the attest step.
+- stellar.expert's intake currently drops submissions while the job stays green
+  ([soroban-build-workflow#9](https://github.com/stellar-expert/soroban-build-workflow/issues/9)).
+  The attestation side is expected to work once stellar.expert fixes it, with no change here.
+- Deploy the WASM attached to the release. It embeds `source_repo` and stellar-cli 27.0.0 as
+  `cliver`, so its hash differs from `make` output.
+- Tag the head of `main`: each release's own tag (`<tag>_<package>_pkg0.0.0_cli27.0.0`) is created
+  at the default branch head. Leave GitHub's immutable releases off; the release attestation they
+  add may break stellar.expert's matching
+  ([soroban-build-workflow#8](https://github.com/stellar-expert/soroban-build-workflow/issues/8)).
+
 ## Deployment
 
 `make` writes optimized WASM to `target/wasm32v1-none/release/`.
 
 `make release` builds the release WASMs into `wasm/` from a clean checkout and embeds the
-checked-out commit as the `source_commit` contract meta. Commit the output in the next commit. No
-release has been cut from this workspace yet.
+checked-out commit as the `source_commit` contract meta. Commit the output in the next commit. A
+verifiable release comes from a version tag instead (see Releases). No release has been cut from
+this workspace yet.
 
 | Contract | Testnet address | Deployed wasm sha256 |
 |---|---|---|
@@ -185,8 +235,10 @@ release has been cut from this workspace yet.
 | fee-forwarder | CBWLTLD5JJGAVSR2KH3UY42WXH3YYORZW54TA74EIGOPWA74LJGYE6C2 | c7dd9bae43bea382e4890a86c9d41153607fe9ac465a207dccfd2d0b66c0d2ba |
 
 The session-policy v4 row and the fee forwarder are built from this workspace on OpenZeppelin
-`df602b6` and soroban-sdk 27.0.6 (commit 1b037f0), the market router from commit f2bd687. v4 is
-deployed with the forwarder `CBWLTLD5…E6C2`, the ported router `CAZFL7XZ…5EAW`, the market
+`df602b6` and soroban-sdk 27.0.6 (commit 1b037f0), the market router from commit f2bd687. The
+session-policy source has since moved its configuration to per-value instance keys and dropped
+`get_config`, with the same constructor and `enforce` rules, so it no longer builds the deployed v4
+WASM. v4 is deployed with the forwarder `CBWLTLD5…E6C2`, the ported router `CAZFL7XZ…5EAW`, the market
 `CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee recipient `GBIBH5UV…MIKE4`. Superseded testnet
 deployments: the v4 instance `CBHJ72ERR2FOSCXIKQ5ZPEZVSJZID7QZAKOTXYNGXUI3EEWRQCRYNCCU` (same wasm),
 pinned to the zenex-contracts router `CAZ4DNYW…REIY4`; the fee forwarder
@@ -201,6 +253,6 @@ v1 and referral testnet contracts were built from the legacy local sources
 (`soroban-smart-account/session-policy` @ 9cded45 and `soroban-referral`), which reproduce the
 deployed wasm byte-for-byte with rustc 1.93.1, stellar CLI 25.2.0 and their original lockfiles.
 This workspace builds with soroban-sdk 27 and one shared lockfile, so its output does not match
-those hashes. The referral functions and their argument types are unchanged; session-policy v4
-replaces v1's interface with a constructor configuration, an empty install parameter and new error
-codes.
+those hashes. `attribute` keeps its arguments, but v1 returns `(caller, referrer)` and fails
+with 1; session-policy v4 replaces v1's interface with a constructor configuration, an empty install
+parameter and new error codes.
