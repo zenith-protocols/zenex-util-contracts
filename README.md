@@ -148,11 +148,10 @@ prints the configuration.
 
 `enforce` allows a context only when:
 
-- every signer of the session rule signed (`SignerNotAuthenticated` 4007). A wallet checks a rule's
-  signers itself only when the rule has no policies; with one, it leaves the check here, so without
-  it an authorization carrying no signature at all would pass. `session-policy/tests/signers.rs`
-  runs that attack against the real canonical wallet and ed25519 verifier WASMs in
-  `session-policy/testdata/`;
+- the session key signed (`SignerNotAuthenticated` 4007), as in OpenZeppelin's spending-limit
+  policy. A wallet leaves the signer check of a rule with policies to its policies, so without it an
+  authorization with no signature would pass; `session-policy/tests/signers.rs` runs that attack
+  against the real canonical wallet and ed25519 verifier WASMs in `session-policy/testdata/`;
 - on the forwarder, the signed `fee_recipient` (index 3 of both projections) is the pinned recipient
   (`ForwardNotAllowed` 4006). The fee leaves through the forwarder's own `transfer_from`, which never
   reaches the policy, so that is the one thing to pin; whatever a forward calls, each call that

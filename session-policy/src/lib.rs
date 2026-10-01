@@ -47,7 +47,7 @@ pub enum SessionPolicyError {
     ApproveNotAllowed = 4005,
     // A forward's signed fee recipient is not the pinned recipient.
     ForwardNotAllowed = 4006,
-    // A signer of the session rule did not sign.
+    // The session key did not sign.
     SignerNotAuthenticated = 4007,
 }
 
@@ -99,20 +99,13 @@ impl Policy for SessionPolicyContract {
         e: &Env,
         context: Context,
         authenticated_signers: Vec<Signer>,
-        context_rule: ContextRule,
+        _context_rule: ContextRule,
         smart_account: Address,
     ) {
         smart_account.require_auth();
 
-        // The wallet checks a rule's signers itself only when the rule has no
-        // policies; with one, it leaves the check here. Every signer of the
-        // rule, the session key, must have signed. The wallet passes the
-        // rule's signers found in the payload, filtered from the rule's own
-        // list, so they all signed exactly when the counts match. Comparing
-        // counts keeps the check from decoding each signer.
-        if authenticated_signers.is_empty()
-            || authenticated_signers.len() != context_rule.signers.len()
-        {
+        // Require the session key's signature.
+        if authenticated_signers.is_empty() {
             panic_with_error!(e, SessionPolicyError::SignerNotAuthenticated);
         }
 

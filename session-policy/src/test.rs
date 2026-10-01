@@ -163,12 +163,6 @@ impl Setup<'_> {
             .enforce(context, &rule.signers, rule, &self.smart_account);
     }
 
-    /// Enforces `context` with `signers` reported as authenticated.
-    fn enforce_with(&self, context: &Context, rule: &ContextRule, signers: &Vec<Signer>) {
-        self.client
-            .enforce(context, signers, rule, &self.smart_account);
-    }
-
     /// The contract error code `enforce` fails with, every signer of `rule`
     /// authenticated.
     fn enforce_error(&self, context: &Context, rule: &ContextRule) -> u32 {
@@ -263,23 +257,6 @@ fn test_enforce_rejects_every_context_without_a_signature() {
     let nobody: Vec<Signer> = Vec::new(&s.e);
     for context in honest_contexts(&s) {
         assert_eq!(s.enforce_error_signed_by(&context, &rule, &nobody), 4007);
-    }
-}
-
-#[test]
-fn test_enforce_rejects_a_missing_rule_signer() {
-    // A rule with two signers needs both: one of them is not enough.
-    let s = Setup::new();
-    let mut rule = s.install(0);
-    rule.signers.push_back(session_signer(&s.e, 8));
-    rule.signer_ids.push_back(2);
-    let only_first: Vec<Signer> = vec![&s.e, rule.signers.get_unchecked(0)];
-    for context in honest_contexts(&s) {
-        assert_eq!(
-            s.enforce_error_signed_by(&context, &rule, &only_first),
-            4007
-        );
-        s.enforce_with(&context, &rule, &rule.signers);
     }
 }
 
