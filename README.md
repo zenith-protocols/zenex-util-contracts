@@ -3,7 +3,7 @@
 Small standalone contracts for Zenex, a perpetual futures exchange on
 [Stellar](https://stellar.org) (Soroban). They sit outside the core protocol in
 [zenex-contracts](https://github.com/zenith-protocols/zenex-contracts) and do not
-link against it; session-policy matches the market, fee-forwarder and router functions it allows by name.
+link against it; session-policy matches the token and fee-forwarder functions it checks by name.
 The market router is ported here from zenex-contracts without its fee functions.
 
 ## Contracts
@@ -13,10 +13,10 @@ The market router is ported here from zenex-contracts without its fee functions.
 | `fee-forwarder` | Generic fee forwarder: pays a relayer in a token under a signed fee cap and recipient, then calls the target |
 | `market-router` | Stateless call router: batching (`multicall`, `multicall_try`) and create-and-fill (`create_and_fill`, `create_and_try_fill`); the fee forwarder's target |
 | `referral` | Referral attestation: a wallet attests which wallet referred it |
-| `session-policy` | Smart-account policy for trading session keys: trade-only, relay fees only through the fee forwarder to a pinned recipient |
+| `session-policy` | Smart-account policy for trading session keys: market calls, token escrow into markets, and relay fees only through the fee forwarder to a pinned recipient |
 
-This source is session-policy v4; the testnet instance runs its previous build, which lacks the
-signer check and so accepts an authorization with no signature (see Session policy and Deployment).
+The testnet session-policy instance runs an earlier, stricter build that lacks the signer check and
+so accepts an authorization with no signature (see Session policy and Deployment).
 It needs review before any mainnet deploy. The workspace depends on OpenZeppelin stellar-contracts at
 an UNRELEASED, UNAUDITED commit (`df602b6`, the head of their `v0.9.0` branch) and builds with
 soroban-sdk 27.0.6; see the fee forwarder below. The older testnet address below runs v1, whose
@@ -136,43 +136,47 @@ over the same relay stack:
 ### Session policy
 
 A trading session key is an ed25519 key registered on the smart account under a `Default` context
-rule with a `valid_until`. The constructor fixes the fee forwarder, the router, the markets, the
-collateral token and the fee recipient, one instance-storage entry each; there is no admin and no
-per-account state, a rule installs the policy with an empty parameter, and install stores nothing.
-The constructor rejects empty markets or any repeated address (`InvalidConfig` 4001).
+rule with a `valid_until`. The policy looks only at authorizations: every call that asks for the
+wallet's signature reaches `enforce` as one context, and those live in three contracts, the
+forwarder, the markets and the token.
 
-Every signer of the session rule must have signed (`SignerNotAuthenticated` 4007). The wallet checks
-a rule's signers itself only when the rule has no policies; with one, it leaves the check to the
-policy, so without it an authorization carrying no signature at all, naming the session rule, would
-pass. `session-policy/tests/signers.rs` runs that attack against the real canonical wallet and
-ed25519 verifier WASMs in `session-policy/testdata/`. With the session key's signature, the key may
-sign:
+The constructor takes `(forwarder, markets, token, fee_recipient)` and stores one instance entry
+each (`forwarder`, `markets`, `token`, `recipient`). It rejects empty markets or any repeated address
+(`InvalidConfig` 4001). There is no admin, no per-account state and no getter: a rule installs the
+policy with an empty parameter, install stores nothing, and `stellar contract read --id <policy>`
+prints the configuration.
 
-- `forward` / `forward_dynamic` on the forwarder, when the signed projection
-  `[fee_token, max_fee_amount, expiration_ledger, fee_recipient, target_contract, target_fn(, target_args)]`
-  pays the token to the pinned recipient and targets the router's `multicall`, `create_and_fill` or
-  `create_and_try_fill`;
-- `create_order`, `cancel_order` and `claim_credit` on the markets;
-- `transfer` of the token into a market (the order escrow);
-- `approve` of the token to the forwarder, at any amount.
+`enforce` allows a context only when:
 
-Everything else fails closed (`ContractNotAllowed` 4002, `FunctionNotAllowed` 4003,
-`TransferNotAllowed` 4004, `ApproveNotAllowed` 4005, `ForwardNotAllowed` 4006): the wallet itself,
-the router directly, the vault, other tokens, muxed or non-market destinations, and contract
-creation. A rejected context shows as `Error(Auth, InvalidAction)`, with the policy's code in the
-diagnostic event log.
+- every signer of the session rule signed (`SignerNotAuthenticated` 4007). A wallet checks a rule's
+  signers itself only when the rule has no policies; with one, it leaves the check here, so without
+  it an authorization carrying no signature at all would pass. `session-policy/tests/signers.rs`
+  runs that attack against the real canonical wallet and ed25519 verifier WASMs in
+  `session-policy/testdata/`;
+- on the forwarder, the signed `fee_recipient` (index 3 of both projections) is the pinned recipient
+  (`ForwardNotAllowed` 4006). The fee leaves through the forwarder's own `transfer_from`, which never
+  reaches the policy, so that is the one thing to pin; whatever a forward calls, each call that
+  needs the wallet is a context of its own;
+- on a market, any function: a market call that needs the wallet acts on its own funds and pays
+  back to it;
+- on the token, `transfer` goes into a market (`TransferNotAllowed` 4004, muxed destinations
+  included) or `approve` names the forwarder, at any amount (`ApproveNotAllowed` 4005); any other
+  token function fails (`FunctionNotAllowed` 4003).
 
-The configuration sits under the instance keys `forwarder`, `router`, `markets`, `token` and
-`recipient`, and `enforce` reads only the entries its branch checks. There is no getter, because
-every `enforce` instantiates the whole module and pays for each export: `stellar contract read --id
-<policy>` prints the instance entry.
+Everything else fails with `ContractNotAllowed` (4002): the wallet itself, the vault, any router,
+other tokens and contract creation. A fee in another token fails at that token's `approve`. A
+rejected context shows as `Error(Auth, InvalidAction)`, with the policy's code in the diagnostic
+event log.
 
-A forwarder allowance needs no cap: the forwarder refuses `transfer_from` and `burn_from` targets,
-so only its own fee step can spend it, under the wallet's root authorization, paying the recipient
-this policy pins. A stolen key can trade on the markets, which mostly moves losses and fees to the
-vault plus the execution fee of each order it fills itself, and can pay relay fees only to the
-pinned recipient. It cannot withdraw, move other tokens, or touch the wallet, the router, the vault
-or other contracts.
+A session key can deposit into the vault but never withdraw: a redeem moves the wallet's shares
+with `vault.transfer`, which is refused. A stolen key can trade on the markets, which mostly moves
+losses and fees to the vault, plus the execution fee of each order it fills itself, and can pay
+relay fees only to the pinned recipient. It cannot withdraw, move other tokens or touch the wallet.
+Markets are upgradeable through governance, so a future market function that asks for the wallet's
+authorization is allowed automatically.
+
+The deployed testnet session policy below predates these rules: it still pins the router and the
+market functions, and it lacks the signer check until it is redeployed.
 
 ## Getting Started
 
@@ -261,7 +265,9 @@ this workspace yet.
 The session-policy v4 row and the fee forwarder are built from this workspace on OpenZeppelin
 `df602b6` and soroban-sdk 27.0.6 (commit 1b037f0), the market router from commit f2bd687. The
 session-policy source has since moved its configuration to per-value instance keys, dropped
-`get_config` and added the signer check, and the fee forwarder source renamed `forward_unsafe` to
+`get_config`, added the signer check, dropped the router from its constructor and reduced its rules
+to the authorization surface (recipient pin, token rules, any market function), and the fee
+forwarder source renamed `forward_unsafe` to
 `forward_dynamic` and shortened a doc, so neither builds its deployed WASM any more. The deployed v4
 lacks the signer check: redeploy it before relying on it. v4 is deployed with the forwarder `CBWLTLD5…E6C2`, the ported router `CAZFL7XZ…5EAW`, the market
 `CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee recipient `GBIBH5UV…MIKE4`. Superseded testnet

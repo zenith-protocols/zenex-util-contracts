@@ -71,7 +71,6 @@ fn setup() -> World {
         SessionPolicyContract,
         (
             Address::generate(&e),
-            Address::generate(&e),
             vec![&e, market.clone()],
             Address::generate(&e),
             Address::generate(&e),

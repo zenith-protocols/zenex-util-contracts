@@ -8,8 +8,7 @@ use soroban_sdk::{
 use stellar_accounts::smart_account::{ContextRule, ContextRuleType, Signer};
 
 use crate::{
-    SessionPolicyContract, SessionPolicyContractClient, FEE_RECIPIENT, FORWARDER, MARKETS, ROUTER,
-    TOKEN,
+    SessionPolicyContract, SessionPolicyContractClient, FEE_RECIPIENT, FORWARDER, MARKETS, TOKEN,
 };
 
 const SCALAR_7: i128 = 10_000_000; // one token unit at 7 decimals
@@ -24,6 +23,7 @@ struct Setup<'a> {
     client: SessionPolicyContractClient<'a>,
     smart_account: Address,
     forwarder: Address,
+    /// Not configured: the target an honest forward calls.
     router: Address,
     market: Address,
     token: Address,
@@ -63,7 +63,6 @@ impl Setup<'_> {
             SessionPolicyContract,
             (
                 forwarder.clone(),
-                router.clone(),
                 vec![&e, market.clone()],
                 token.clone(),
                 fee_recipient.clone(),
@@ -204,9 +203,8 @@ fn test_constructor_stores_one_instance_entry_per_value() {
     let e = &s.e;
     e.as_contract(&s.client.address, || {
         let instance = e.storage().instance();
-        assert_eq!(instance.all().len(), 5, "five entries and nothing else");
+        assert_eq!(instance.all().len(), 4, "four entries and nothing else");
         assert_eq!(instance.get(&FORWARDER), Some(s.forwarder.clone()));
-        assert_eq!(instance.get(&ROUTER), Some(s.router.clone()));
         assert_eq!(instance.get(&MARKETS), Some(vec![e, s.market.clone()]));
         assert_eq!(instance.get(&TOKEN), Some(s.token.clone()));
         assert_eq!(instance.get(&FEE_RECIPIENT), Some(s.fee_recipient.clone()));
@@ -215,7 +213,6 @@ fn test_constructor_stores_one_instance_entry_per_value() {
     // With no getter, these names are what off-chain readers look up.
     for (key, name) in [
         (FORWARDER, "forwarder"),
-        (ROUTER, "router"),
         (MARKETS, "markets"),
         (TOKEN, "token"),
         (FEE_RECIPIENT, "recipient"),
@@ -228,7 +225,6 @@ fn test_constructor_stores_one_instance_entry_per_value() {
 fn register(
     e: &Env,
     forwarder: &Address,
-    router: &Address,
     markets: Vec<Address>,
     token: &Address,
     fee_recipient: &Address,
@@ -237,7 +233,6 @@ fn register(
         SessionPolicyContract,
         (
             forwarder.clone(),
-            router.clone(),
             markets,
             token.clone(),
             fee_recipient.clone(),
@@ -245,8 +240,8 @@ fn register(
     );
 }
 
-/// Five distinct addresses: forwarder, router, market, token, recipient.
-fn addresses(e: &Env) -> [Address; 5] {
+/// Four distinct addresses: forwarder, market, token, recipient.
+fn addresses(e: &Env) -> [Address; 4] {
     core::array::from_fn(|_| Address::generate(e))
 }
 
@@ -254,24 +249,24 @@ fn addresses(e: &Env) -> [Address; 5] {
 #[should_panic(expected = "Error(Contract, #4001)")]
 fn test_constructor_rejects_empty_markets() {
     let e = Env::default();
-    let [forwarder, router, _, token, recipient] = addresses(&e);
-    register(&e, &forwarder, &router, Vec::new(&e), &token, &recipient);
+    let [forwarder, _, token, recipient] = addresses(&e);
+    register(&e, &forwarder, Vec::new(&e), &token, &recipient);
 }
 
 #[test]
 fn test_constructor_rejects_every_overlap() {
     let e = Env::default();
-    let [forwarder, router, market, token, recipient] = addresses(&e);
-    let base = [&forwarder, &router, &market, &token, &recipient];
+    let [forwarder, market, token, recipient] = addresses(&e);
+    let base = [&forwarder, &market, &token, &recipient];
 
     // Every pair of roles sharing one address is rejected.
-    for i in 0..5 {
-        for j in (i + 1)..5 {
+    for i in 0..4 {
+        for j in (i + 1)..4 {
             let mut roles = base.map(|a| a.clone());
             roles[j] = roles[i].clone();
-            let [fw, rt, mk, tk, rc] = roles;
+            let [fw, mk, tk, rc] = roles;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                register(&e, &fw, &rt, vec![&e, mk.clone()], &tk, &rc)
+                register(&e, &fw, vec![&e, mk.clone()], &tk, &rc)
             }));
             assert!(result.is_err(), "roles {i} and {j} overlap");
         }
@@ -282,7 +277,6 @@ fn test_constructor_rejects_every_overlap() {
         register(
             &e,
             &forwarder,
-            &router,
             vec![&e, market.clone(), market.clone()],
             &token,
             &recipient,
@@ -375,35 +369,25 @@ fn test_enforce_allows_the_honest_trade_when_signed() {
 // ==========================================
 
 #[test]
-fn test_enforce_allows_pinned_forwards_to_every_router_target() {
+fn test_enforce_allows_any_forward_paying_the_recipient() {
     let s = Setup::new();
     let rule = s.install(0);
+    let other = Address::generate(&s.e);
 
+    // Only the signed recipient is pinned: any target, any function. Every
+    // call the forward makes that needs the wallet is a context of its own.
+    let targets = [
+        (&s.router, "multicall"),
+        (&s.router, "create_and_fill"),
+        (&s.router, "create_and_try_fill"),
+        (&s.market, "create_order"),
+        (&other, "anything"),
+    ];
     for fn_name in ["forward", "forward_dynamic"] {
-        for target_fn in ["multicall", "create_and_fill", "create_and_try_fill"] {
-            s.enforce(&s.forward(fn_name, target_fn), &rule);
+        for (target, target_fn) in targets {
+            let args = s.projection(fn_name, &s.token, &s.fee_recipient, target, target_fn);
+            s.enforce(&s.call(&s.forwarder, fn_name, args), &rule);
         }
-    }
-}
-
-#[test]
-fn test_enforce_blocks_other_forwarder_functions() {
-    let s = Setup::new();
-    let rule = s.install(0);
-    let args = s.projection(
-        "forward_dynamic",
-        &s.token,
-        &s.fee_recipient,
-        &s.router,
-        "create_and_fill",
-    );
-
-    for name in ["forward_all", "upgrade", "collect"] {
-        assert_eq!(
-            s.enforce_error(&s.call(&s.forwarder, name, args.clone()), &rule),
-            4003,
-            "{name}"
-        );
     }
 }
 
@@ -424,104 +408,12 @@ fn test_enforce_blocks_a_forward_paying_another_recipient() {
 }
 
 #[test]
-fn test_enforce_blocks_a_forward_in_another_fee_token() {
-    let s = Setup::new();
-    let rule = s.install(0);
-    let other_token = Address::generate(&s.e);
-
-    let args = s.projection(
-        "forward_dynamic",
-        &other_token,
-        &s.fee_recipient,
-        &s.router,
-        "create_and_fill",
-    );
-    assert_eq!(
-        s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", args), &rule),
-        4006
-    );
-}
-
-#[test]
-fn test_enforce_blocks_a_forward_to_another_target() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    // The token itself (a drain through the forwarder), a market directly,
-    // and any other contract.
-    for target in [s.token.clone(), s.market.clone(), Address::generate(&s.e)] {
-        let args = s.projection(
-            "forward_dynamic",
-            &s.token,
-            &s.fee_recipient,
-            &target,
-            "create_and_fill",
-        );
-        assert_eq!(
-            s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", args), &rule),
-            4006
-        );
-    }
-}
-
-#[test]
-fn test_enforce_blocks_a_forward_to_another_router_function() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    for target_fn in [
-        "multicall_try",
-        "multicall_with_fee",
-        "create_and_fill_with_fee",
-        "transfer_from",
-    ] {
-        let args = s.projection(
-            "forward_dynamic",
-            &s.token,
-            &s.fee_recipient,
-            &s.router,
-            target_fn,
-        );
-        assert_eq!(
-            s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", args), &rule),
-            4006,
-            "{target_fn}"
-        );
-    }
-}
-
-#[test]
-fn test_enforce_blocks_a_malformed_projection() {
+fn test_enforce_blocks_a_forward_without_a_recipient_address() {
     let s = Setup::new();
     let rule = s.install(0);
     let e = &s.e;
 
-    // `forward` without `target_args`, and `forward_dynamic` with them.
-    let short = s.projection(
-        "forward_dynamic",
-        &s.token,
-        &s.fee_recipient,
-        &s.router,
-        "multicall",
-    );
-    assert_eq!(
-        s.enforce_error(&s.call(&s.forwarder, "forward", short), &rule),
-        4006
-    );
-    let long = s.projection(
-        "forward",
-        &s.token,
-        &s.fee_recipient,
-        &s.router,
-        "multicall",
-    );
-    assert_eq!(
-        s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", long), &rule),
-        4006
-    );
-
-    // A recipient that is not an address, and a target function that is not
-    // a symbol.
+    // A recipient that is not an address, or no recipient at all.
     let mut bad_recipient = s.projection(
         "forward_dynamic",
         &s.token,
@@ -537,24 +429,39 @@ fn test_enforce_blocks_a_malformed_projection() {
         ),
         4006
     );
-    let mut bad_target_fn = s.projection(
+    assert_eq!(
+        s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", vec![e]), &rule),
+        4006
+    );
+}
+
+#[test]
+fn test_enforce_blocks_a_fee_in_another_token() {
+    let s = Setup::new();
+    let rule = s.install(0);
+    let other_token = Address::generate(&s.e);
+
+    // The root does not pin the fee token, but a fee in another token needs
+    // that token's `approve`, and only the configured token is allowed.
+    let args = s.projection(
         "forward_dynamic",
-        &s.token,
+        &other_token,
         &s.fee_recipient,
         &s.router,
         "create_and_fill",
     );
-    bad_target_fn.set(5, String::from_str(e, "create_and_fill").into_val(e));
+    s.enforce(&s.call(&s.forwarder, "forward_dynamic", args), &rule);
+    let e = &s.e;
+    let approve = vec![
+        e,
+        s.smart_account.into_val(e),
+        s.forwarder.into_val(e),
+        SCALAR_7.into_val(e),
+        1_000u32.into_val(e),
+    ];
     assert_eq!(
-        s.enforce_error(
-            &s.call(&s.forwarder, "forward_dynamic", bad_target_fn),
-            &rule
-        ),
-        4006
-    );
-    assert_eq!(
-        s.enforce_error(&s.call(&s.forwarder, "forward_dynamic", vec![e]), &rule),
-        4006
+        s.enforce_error(&s.call(&other_token, "approve", approve), &rule),
+        4002
     );
 }
 
@@ -563,11 +470,19 @@ fn test_enforce_blocks_a_malformed_projection() {
 // ==========================================
 
 #[test]
-fn test_enforce_allows_market_trading_functions() {
+fn test_enforce_allows_any_market_function() {
     let s = Setup::new();
     let rule = s.install(0);
 
-    for name in ["create_order", "cancel_order", "claim_credit"] {
+    // A market call that needs the wallet acts on the wallet's own funds, so
+    // vault deposits and their cancels pass too.
+    for name in [
+        "create_order",
+        "cancel_order",
+        "claim_credit",
+        "create_vault_order",
+        "cancel_vault_order",
+    ] {
         s.enforce(&s.call(&s.market, name, vec![&s.e]), &rule);
     }
 }
@@ -576,13 +491,12 @@ fn test_enforce_allows_market_trading_functions() {
 fn test_enforce_allows_every_configured_market() {
     let e = Env::default();
     e.mock_all_auths();
-    let [forwarder, router, market_a, token, recipient] = addresses(&e);
+    let [forwarder, market_a, token, recipient] = addresses(&e);
     let market_b = Address::generate(&e);
     let policy = e.register(
         SessionPolicyContract,
         (
             forwarder,
-            router,
             vec![&e, market_a.clone(), market_b.clone()],
             token.clone(),
             recipient,
@@ -611,26 +525,6 @@ fn test_enforce_allows_every_configured_market() {
             ],
         });
         client.enforce(&escrow, &signers, &rule, &smart_account);
-    }
-}
-
-#[test]
-fn test_enforce_blocks_other_market_functions() {
-    let s = Setup::new();
-    let rule = s.install(0);
-
-    for name in [
-        "create_vault_order",
-        "cancel_vault_order",
-        "execute_order",
-        "set_config",
-        "upgrade",
-    ] {
-        assert_eq!(
-            s.enforce_error(&s.call(&s.market, name, vec![&s.e]), &rule),
-            4003,
-            "{name}"
-        );
     }
 }
 
@@ -760,9 +654,8 @@ fn test_enforce_blocks_other_contracts() {
     let rule = s.install(0);
     let (vault, other_token) = (Address::generate(&s.e), Address::generate(&s.e));
 
-    // The wallet itself (no signer, rule or upgrade calls), the router
-    // directly (its old `*_with_fee` path included), the vault and any other
-    // token.
+    // The wallet itself (no signer, rule or upgrade calls), a router (an old
+    // `*_with_fee` path included), the vault and any other token.
     let contexts = [
         s.call(&s.smart_account, "add_context_rule", vec![&s.e]),
         s.call(&s.router, "multicall_with_fee", vec![&s.e]),
@@ -772,6 +665,47 @@ fn test_enforce_blocks_other_contracts() {
     ];
     for context in contexts.iter() {
         assert_eq!(s.enforce_error(context, &rule), 4002);
+    }
+}
+
+#[test]
+fn test_enforce_blocks_a_vault_share_transfer() {
+    let s = Setup::new();
+    let rule = s.install(0);
+    let vault = Address::generate(&s.e);
+    let e = &s.e;
+
+    // A vault redeem moves the wallet's shares with `vault.transfer`: a
+    // session can deposit into the vault but never withdraw.
+    let shares = vec![
+        e,
+        s.smart_account.into_val(e),
+        s.market.into_val(e),
+        SCALAR_7.into_val(e),
+    ];
+    assert_eq!(
+        s.enforce_error(&s.call(&vault, "transfer", shares), &rule),
+        4002
+    );
+}
+
+#[test]
+fn test_enforce_blocks_the_wallet_itself() {
+    let s = Setup::new();
+    let rule = s.install(0);
+
+    for name in [
+        "add_context_rule",
+        "remove_context_rule",
+        "add_signer",
+        "add_policy",
+        "upgrade",
+    ] {
+        assert_eq!(
+            s.enforce_error(&s.call(&s.smart_account, name, vec![&s.e]), &rule),
+            4002,
+            "{name}"
+        );
     }
 }
 
@@ -826,7 +760,7 @@ fn test_regression_v1_router_fee_envelope_is_blocked() {
 
     // v1 let `multicall_with_fee(calls = [], max_fee_amount = balance, ..)`
     // drain the wallet: its fee recipient is unsigned, and the router can
-    // spend its own allowance. v4 accepts neither the envelope nor an
+    // spend its own allowance. The policy accepts neither the envelope nor an
     // approve to the router.
     let e = &s.e;
     let calls: Vec<Val> = Vec::new(e);

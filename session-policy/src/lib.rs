@@ -26,8 +26,6 @@ use stellar_accounts::{
 
 /// The fee forwarder the key's relayed trades go through: an `Address`.
 pub(crate) const FORWARDER: Symbol = symbol_short!("forwarder");
-/// The router the forwarder may target: an `Address`.
-pub(crate) const ROUTER: Symbol = symbol_short!("router");
 /// The markets the key may trade on: a `Vec<Address>`.
 pub(crate) const MARKETS: Symbol = symbol_short!("markets");
 /// The collateral token, which is also the fee token: an `Address`.
@@ -43,13 +41,13 @@ pub enum SessionPolicyError {
     InvalidConfig = 4001,
     // The context is not a call to an allowed contract.
     ContractNotAllowed = 4002,
-    // The function is not allowed on that contract.
+    // A token function other than `transfer` or `approve`.
     FunctionNotAllowed = 4003,
     // A token transfer goes somewhere other than a market.
     TransferNotAllowed = 4004,
     // A token approval names a spender other than the forwarder.
     ApproveNotAllowed = 4005,
-    // A forward's signed projection is not the pinned relayed trade.
+    // A forward's signed fee recipient is not the pinned recipient.
     ForwardNotAllowed = 4006,
     // A signer of the session rule did not sign.
     SignerNotAuthenticated = 4007,
@@ -62,22 +60,11 @@ pub enum SessionPolicyError {
 const EXTEND_AMOUNT: u32 = 30 * 17280; // ~30 days
 const TTL_THRESHOLD: u32 = EXTEND_AMOUNT - 17280; // refresh at ~29 days
 
-/// The market functions a session may call: trading only. Vault deposits and
-/// redeems stay behind the passkey.
-const MARKET_FUNCTIONS: [&str; 3] = ["create_order", "cancel_order", "claim_credit"];
-
-/// The router functions a forward may target.
-const ROUTER_TARGETS: [&str; 3] = ["multicall", "create_and_fill", "create_and_try_fill"];
-
-/// The forwarder's signed projection:
+/// Where `fee_recipient` sits in the forwarder's signed projection,
 /// `[fee_token, max_fee_amount, expiration_ledger, fee_recipient,
-/// target_contract, target_fn]`, plus `target_args` for `forward`.
-const PROJECTION_FEE_TOKEN: u32 = 0;
+/// target_contract, target_fn(, target_args)]`, the same in `forward` and
+/// `forward_dynamic`.
 const PROJECTION_FEE_RECIPIENT: u32 = 3;
-const PROJECTION_TARGET_CONTRACT: u32 = 4;
-const PROJECTION_TARGET_FN: u32 = 5;
-const PROJECTION_LEN_UNSAFE: u32 = 6;
-const PROJECTION_LEN_SAFE: u32 = 7;
 
 // ==========================================
 // Contract
@@ -88,9 +75,9 @@ pub struct SessionPolicyContract;
 
 #[contractimpl]
 impl SessionPolicyContract {
-    /// Fixes the policy's forwarder, router, markets, token and fee
-    /// recipient. There is no way to change them later: a new configuration
-    /// is a new deployment.
+    /// Fixes the policy's forwarder, markets, token and fee recipient. There
+    /// is no way to change them later: a new configuration is a new
+    /// deployment.
     ///
     /// # Errors
     /// - [`SessionPolicyError::InvalidConfig`] if `markets` is empty or any
@@ -98,13 +85,12 @@ impl SessionPolicyContract {
     pub fn __constructor(
         e: Env,
         forwarder: Address,
-        router: Address,
         markets: Vec<Address>,
         token: Address,
         fee_recipient: Address,
     ) {
         let mut seen: Vec<Address> = Vec::new(&e);
-        for address in [&forwarder, &router, &token, &fee_recipient]
+        for address in [&forwarder, &token, &fee_recipient]
             .into_iter()
             .cloned()
             .chain(markets.iter())
@@ -119,7 +105,6 @@ impl SessionPolicyContract {
         }
         let instance = e.storage().instance();
         instance.set(&FORWARDER, &forwarder);
-        instance.set(&ROUTER, &router);
         instance.set(&MARKETS, &markets);
         instance.set(&TOKEN, &token);
         instance.set(&FEE_RECIPIENT, &fee_recipient);
@@ -169,39 +154,31 @@ impl Policy for SessionPolicyContract {
         // most one branch matches. Each reads only the values it checks.
         let forwarder: Address = read(e, &FORWARDER);
         if contract == forwarder {
-            // The root of a relayed trade. Its args are the signed
-            // projection, not the full call.
-            let len = if fn_name == symbol_short!("forward") {
-                PROJECTION_LEN_SAFE
-            } else if fn_name == Symbol::new(e, "forward_dynamic") {
-                PROJECTION_LEN_UNSAFE
-            } else {
-                panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
-            };
-            let target_fn = args
-                .get(PROJECTION_TARGET_FN)
-                .and_then(|val| Symbol::try_from_val(e, &val).ok());
-            if args.len() != len
-                || address_arg(e, &args, PROJECTION_FEE_TOKEN) != Some(read(e, &TOKEN))
-                || address_arg(e, &args, PROJECTION_FEE_RECIPIENT) != Some(read(e, &FEE_RECIPIENT))
-                || address_arg(e, &args, PROJECTION_TARGET_CONTRACT) != Some(read(e, &ROUTER))
-                || !target_fn.is_some_and(|name| is_one_of(e, &name, &ROUTER_TARGETS))
-            {
+            // The root of a relayed trade; its args are the signed
+            // projection. The fee leaves the wallet through the forwarder's
+            // own `transfer_from`, which never reaches this policy, so the
+            // signed recipient is the one thing to pin here. Whatever the
+            // forward calls, every call that needs the wallet's
+            // authorization is a context of its own.
+            if address_arg(e, &args, PROJECTION_FEE_RECIPIENT) != Some(read(e, &FEE_RECIPIENT)) {
                 panic_with_error!(e, SessionPolicyError::ForwardNotAllowed);
             }
             return;
         }
 
+        // A market call that needs the wallet's authorization acts on the
+        // wallet's own funds and pays back to the wallet, so any function is
+        // allowed.
         let markets: Vec<Address> = read(e, &MARKETS);
         if markets.contains(&contract) {
-            if !is_one_of(e, &fn_name, &MARKET_FUNCTIONS) {
-                panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
-            }
-        } else if contract == read::<Address>(e, &TOKEN) {
+            return;
+        }
+
+        if contract == read::<Address>(e, &TOKEN) {
             if fn_name == symbol_short!("transfer") {
-                // `transfer(from, to, amount)`: only the order escrow into a
-                // market. A muxed `to` does not decode as an address, so it
-                // fails here too.
+                // `transfer(from, to, amount)`: only escrow into a market. A
+                // muxed `to` does not decode as an address, so it fails here
+                // too.
                 if !address_arg(e, &args, 1).is_some_and(|to| markets.contains(&to)) {
                     panic_with_error!(e, SessionPolicyError::TransferNotAllowed);
                 }
@@ -214,9 +191,10 @@ impl Policy for SessionPolicyContract {
             } else {
                 panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
             }
-        } else {
-            panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
+            return;
         }
+
+        panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
     }
 
     fn install(
@@ -245,11 +223,6 @@ fn read<V: TryFromVal<Env, Val>>(e: &Env, key: &Symbol) -> V {
         .instance()
         .get(key)
         .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::InvalidConfig))
-}
-
-/// Whether `fn_name` is one of `allowed`.
-fn is_one_of(e: &Env, fn_name: &Symbol, allowed: &[&str]) -> bool {
-    allowed.iter().any(|name| *fn_name == Symbol::new(e, name))
 }
 
 /// Decodes `args[index]` as a plain address. A missing argument, a muxed
