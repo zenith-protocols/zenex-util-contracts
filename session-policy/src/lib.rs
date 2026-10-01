@@ -8,8 +8,9 @@ mod test;
 
 use soroban_sdk::{
     auth::{Context, ContractContext},
-    contract, contracterror, contractimpl, panic_with_error, symbol_short, Address, Env, Symbol,
-    TryFromVal, Vec,
+    contract, contracterror, contractimpl, panic_with_error, symbol_short,
+    unwrap::UnwrapOptimized,
+    Address, Env, Symbol, TryFromVal, Vec,
 };
 use stellar_accounts::{
     policies::Policy,
@@ -126,7 +127,7 @@ impl Policy for SessionPolicyContract {
         // The first matching branch decides. Each reads only the values it
         // checks.
         let instance = e.storage().instance();
-        let forwarder: Address = instance.get(&FORWARDER).unwrap();
+        let forwarder: Address = instance.get(&FORWARDER).unwrap_optimized();
         if contract == forwarder {
             // The root of a relayed trade; its args are the signed
             // projection. The fee leaves the wallet through the forwarder's
@@ -137,7 +138,7 @@ impl Policy for SessionPolicyContract {
             let recipient = args
                 .get(PROJECTION_FEE_RECIPIENT)
                 .and_then(|val| Address::try_from_val(e, &val).ok());
-            let fee_recipient: Address = instance.get(&FEE_RECIPIENT).unwrap();
+            let fee_recipient: Address = instance.get(&FEE_RECIPIENT).unwrap_optimized();
             if recipient != Some(fee_recipient) {
                 panic_with_error!(e, SessionPolicyError::ForwardNotAllowed);
             }
@@ -147,12 +148,12 @@ impl Policy for SessionPolicyContract {
         // A market call that needs the wallet's authorization acts on the
         // wallet's own funds and pays back to the wallet, so any function is
         // allowed.
-        let markets: Vec<Address> = instance.get(&MARKETS).unwrap();
+        let markets: Vec<Address> = instance.get(&MARKETS).unwrap_optimized();
         if markets.contains(&contract) {
             return;
         }
 
-        let token: Address = instance.get(&TOKEN).unwrap();
+        let token: Address = instance.get(&TOKEN).unwrap_optimized();
         if contract == token {
             if fn_name == symbol_short!("transfer") {
                 // `transfer(from, to, amount)`: only escrow into a market. A

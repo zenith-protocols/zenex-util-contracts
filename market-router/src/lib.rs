@@ -7,8 +7,8 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, vec, Address, Bytes, Env, Error, IntoVal, Symbol,
-    TryFromVal, Val, Vec,
+    contract, contractimpl, contracttype, unwrap::UnwrapOptimized, vec, Address, Bytes, Env, Error,
+    IntoVal, Symbol, TryFromVal, Val, Vec,
 };
 
 /// One contract invocation in a batch.
@@ -88,9 +88,9 @@ impl RouterContract {
         keeper: Address,
         price: Bytes,
     ) -> Vec<Val> {
-        let market = calls.get(0).unwrap().contract;
+        let market = calls.get(0).unwrap_optimized().contract;
         let mut results = Self::multicall(e.clone(), calls);
-        let id = u32::try_from_val(&e, &results.get(0).unwrap()).unwrap();
+        let id = u32::try_from_val(&e, &results.get(0).unwrap_optimized()).unwrap_optimized();
         let payout: i128 = e.invoke_contract(
             &market,
             &Symbol::new(&e, "execute_order"),
@@ -125,9 +125,9 @@ impl RouterContract {
         keeper: Address,
         price: Bytes,
     ) -> Vec<Val> {
-        let market = calls.get(0).unwrap().contract;
+        let market = calls.get(0).unwrap_optimized().contract;
         let mut results = Self::multicall(e.clone(), calls);
-        let id = u32::try_from_val(&e, &results.get(0).unwrap()).unwrap();
+        let id = u32::try_from_val(&e, &results.get(0).unwrap_optimized()).unwrap_optimized();
         results.push_back(
             match e.try_invoke_contract::<i128, Error>(
                 &market,
