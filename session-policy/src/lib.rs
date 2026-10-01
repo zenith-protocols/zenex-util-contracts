@@ -124,8 +124,7 @@ impl Policy for SessionPolicyContract {
             panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
         };
 
-        // The first matching branch decides. Each reads only the values it
-        // checks.
+        // The first matching branch decides; each reads only what it checks.
         let instance = e.storage().instance();
         let forwarder: Address = instance.get(&FORWARDER).unwrap_optimized();
         if contract == forwarder {
@@ -145,14 +144,6 @@ impl Policy for SessionPolicyContract {
             return;
         }
 
-        // A market call that needs the wallet's authorization acts on the
-        // wallet's own funds and pays back to the wallet, so any function is
-        // allowed.
-        let markets: Vec<Address> = instance.get(&MARKETS).unwrap_optimized();
-        if markets.contains(&contract) {
-            return;
-        }
-
         let token: Address = instance.get(&TOKEN).unwrap_optimized();
         if contract == token {
             if fn_name == symbol_short!("transfer") {
@@ -162,6 +153,7 @@ impl Policy for SessionPolicyContract {
                 let to = args
                     .get(1)
                     .and_then(|val| Address::try_from_val(e, &val).ok());
+                let markets: Vec<Address> = instance.get(&MARKETS).unwrap_optimized();
                 if !to.is_some_and(|to| markets.contains(&to)) {
                     panic_with_error!(e, SessionPolicyError::TransferNotAllowed);
                 }
@@ -177,6 +169,14 @@ impl Policy for SessionPolicyContract {
             } else {
                 panic_with_error!(e, SessionPolicyError::FunctionNotAllowed);
             }
+            return;
+        }
+
+        // Checked last: reading the market list costs the most. A market call
+        // that needs the wallet's authorization acts on the wallet's own funds
+        // and pays back to the wallet, so any function is allowed.
+        let markets: Vec<Address> = instance.get(&MARKETS).unwrap_optimized();
+        if markets.contains(&contract) {
             return;
         }
 
