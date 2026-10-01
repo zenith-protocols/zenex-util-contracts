@@ -144,6 +144,8 @@ impl Policy for SessionPolicyContract {
             return;
         }
 
+        let markets: Vec<Address> = instance.get(&MARKETS).unwrap_optimized();
+
         let token: Address = instance.get(&TOKEN).unwrap_optimized();
         if contract == token {
             if fn_name == symbol_short!("transfer") {
@@ -153,7 +155,6 @@ impl Policy for SessionPolicyContract {
                 let to = args
                     .get(1)
                     .and_then(|val| Address::try_from_val(e, &val).ok());
-                let markets: Vec<Address> = instance.get(&MARKETS).unwrap_optimized();
                 if !to.is_some_and(|to| markets.contains(&to)) {
                     panic_with_error!(e, SessionPolicyError::TransferNotAllowed);
                 }
@@ -172,10 +173,9 @@ impl Policy for SessionPolicyContract {
             return;
         }
 
-        // Checked last: reading the market list costs the most. A market call
-        // that needs the wallet's authorization acts on the wallet's own funds
-        // and pays back to the wallet, so any function is allowed.
-        let markets: Vec<Address> = instance.get(&MARKETS).unwrap_optimized();
+        // A market call that needs the wallet's authorization acts on the
+        // wallet's own funds and pays back to the wallet, so any function is
+        // allowed.
         if markets.contains(&contract) {
             return;
         }
