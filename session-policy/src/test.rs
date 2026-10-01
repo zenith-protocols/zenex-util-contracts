@@ -30,9 +30,9 @@ struct Setup<'a> {
     fee_recipient: Address,
 }
 
-/// An ed25519 session key signer, verified by `verifier`.
-fn session_signer(e: &Env, key_byte: u8) -> Signer {
-    Signer::External(Address::generate(e), Bytes::from_array(e, &[key_byte; 32]))
+/// An ed25519 session key signer under a generated verifier address.
+fn session_signer(e: &Env) -> Signer {
+    Signer::External(Address::generate(e), Bytes::from_array(e, &[7; 32]))
 }
 
 /// A `Default` session rule with id `id`, as the frontend registers it: one
@@ -42,7 +42,7 @@ fn session_rule(e: &Env, id: u32) -> ContextRule {
         id,
         context_type: ContextRuleType::Default,
         name: String::from_str(e, "Trading Session"),
-        signers: vec![e, session_signer(e, 7)],
+        signers: vec![e, session_signer(e)],
         signer_ids: vec![e, 1],
         policies: Vec::new(e),
         policy_ids: Vec::new(e),
@@ -444,6 +444,51 @@ fn test_enforce_allows_every_configured_market() {
         });
         client.enforce(&escrow, &signers, &rule, &smart_account);
     }
+}
+
+#[test]
+fn test_enforce_checks_the_token_before_the_markets() {
+    // A token also listed as a market still gets the token rules: the token
+    // branch runs before the market branch.
+    let e = Env::default();
+    e.mock_all_auths();
+    let [forwarder, market, token, recipient] = addresses(&e);
+    let policy = e.register(
+        SessionPolicyContract,
+        (
+            forwarder,
+            vec![&e, market.clone(), token.clone()],
+            token.clone(),
+            recipient,
+        ),
+    );
+    let client = SessionPolicyContractClient::new(&e, &policy);
+    let smart_account = Address::generate(&e);
+    let attacker = Address::generate(&e);
+    let rule = session_rule(&e, 0);
+    let error = |fn_name: &str, args: Vec<Val>| {
+        let context = Context::Contract(ContractContext {
+            contract: token.clone(),
+            fn_name: Symbol::new(&e, fn_name),
+            args,
+        });
+        match client.try_enforce(&context, &rule.signers, &rule, &smart_account) {
+            Err(Ok(error)) => error.get_code(),
+            other => panic!("expected a contract error, got {other:?}"),
+        }
+    };
+    let wallet = smart_account.into_val(&e);
+    let to = attacker.into_val(&e);
+    let amount = SCALAR_7.into_val(&e);
+    assert_eq!(error("transfer", vec![&e, wallet, to, amount]), 4004);
+    assert_eq!(error("burn", vec![&e, wallet, amount]), 4003);
+    assert_eq!(
+        error(
+            "approve",
+            vec![&e, wallet, to, amount, 1_000u32.into_val(&e)]
+        ),
+        4005
+    );
 }
 
 // ==========================================

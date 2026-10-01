@@ -3,7 +3,8 @@
 Small standalone contracts for Zenex, a perpetual futures exchange on
 [Stellar](https://stellar.org) (Soroban). They sit outside the core protocol in
 [zenex-contracts](https://github.com/zenith-protocols/zenex-contracts) and do not
-link against it; session-policy matches the token and fee-forwarder functions it checks by name.
+link against it; session-policy matches the token functions it checks (`transfer`, `approve`) by
+name and reads the forwarder's signed `fee_recipient` by position (index 3).
 The market router is ported here from zenex-contracts without its fee functions.
 
 ## Contracts
@@ -72,9 +73,11 @@ anyone's forward there (see the
 
 Both entry points fail with `TargetNotAllowed` (6001), `InvalidRecipient` (6002), OpenZeppelin's
 `InvalidFeeBounds` when `fee_amount` is not above zero or exceeds the cap, `InvalidUser` when `user`
-is the forwarder, and the token's own error when `user` holds less than the cap. A successful call
-emits only OpenZeppelin's `["fee_collected", user, recipient]` with data `[token, amount]`; there is
-no forward event, since the call data is already in the transaction and the target emits its own.
+is the forwarder, and the token's own error when `expiration_ledger` is already past (the Stellar
+Asset Contract's allowance error) or `user` holds less than the cap. A successful call emits only
+OpenZeppelin's `fee_collected` event, with topics `["fee_collected", user, recipient]` and the data
+map `{ amount, token }`; there is no forward event, since the call data is already in the
+transaction and the target emits its own.
 
 For a Zenex order the wallet signs one tree rooted at the forwarder call: `approve(forwarder, cap)`
 and `market.create_order` with its escrow `transfer`. When the target is the market router, the
@@ -85,8 +88,8 @@ market `CCOIDO46…`, fee recipient `GBIBH5UV…`) through the relay stack (back
 plugin in forwarder mode), with real signatures. The relay set the fee and, for `forward_unsafe`,
 the keeper and a fresh price after signing. Every run pulled the full 1 USDC cap, refunded the cap
 minus the fee, and left the allowance and the forwarder's balance at zero. The session rows run
-against the deployed canonical smart account (OpenZeppelin v0.7.1 wasm), which installed this v4
-build with an empty parameter:
+against the deployed canonical smart account (OpenZeppelin v0.7.1 wasm), which installed the
+superseded v4 instance `CBHJ72ER…` (see Deployment) with an empty parameter:
 
 | Signer | Flow | Transaction |
 |---|---|---|
@@ -220,7 +223,8 @@ so each contract here takes codes no neighbour uses. The codes that can meet in 
 | 7001 | `referral` |
 
 `market-router` defines none: a failing call traps with its own error. OpenZeppelin's governance
-(4000–4104) and zk-email (6000–6001) modules reuse two of these ranges; nothing here links them.
+(4000–4104, 5000–5023) and zk-email (6000–6001) modules reuse three of these ranges; nothing here
+links them.
 
 ## Releases
 

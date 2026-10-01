@@ -2,13 +2,14 @@ extern crate std;
 
 use crate::{FeeForwarderContract, FeeForwarderContractClient};
 use soroban_sdk::testutils::{
-    Address as _, AuthorizedFunction, AuthorizedInvocation, MockAuth, MockAuthInvoke,
+    Address as _, AuthorizedFunction, AuthorizedInvocation, Events as _, MockAuth, MockAuthInvoke,
 };
+use soroban_sdk::Event as _;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
     Env, Error, IntoVal, MuxedAddress, Symbol, TryFromVal, Val, Vec,
 };
-use stellar_fee_abstraction::{collect_fee_and_invoke, FeeAbstractionApproval};
+use stellar_fee_abstraction::{collect_fee_and_invoke, FeeAbstractionApproval, FeeCollected};
 
 // The stellar-fee-abstraction bounds-check discriminant.
 const INVALID_FEE_BOUNDS: u32 = 5003;
@@ -414,6 +415,34 @@ fn forward_dynamic_collects_the_fee_and_consumes_the_allowance() {
 }
 
 #[test]
+fn a_forward_emits_only_fee_collected() {
+    for fn_name in ["forward", "forward_dynamic"] {
+        let w = setup();
+        match fn_name {
+            "forward" => w.sign(
+                "forward",
+                w.signed_args(&w.probe, "probe", &w.probe_args(1)),
+            ),
+            _ => w.sign("forward_dynamic", w.dynamic_signed_args(&w.probe, "probe")),
+        }
+        w.forward_probe(fn_name, 1, &w.recipient);
+
+        let expected = FeeCollected {
+            user: w.user.clone(),
+            recipient: w.recipient.clone(),
+            token: w.usdc.address.clone(),
+            amount: FEE,
+        }
+        .to_xdr(&w.e, &w.forwarder.address);
+        assert_eq!(
+            w.e.events().all().filter_by_contract(&w.forwarder.address),
+            [expected],
+            "{fn_name}"
+        );
+    }
+}
+
+#[test]
 fn a_fee_at_the_cap_leaves_nothing_to_refund() {
     let w = setup();
     let args = w.probe_args(1);
@@ -683,7 +712,7 @@ fn changing_the_recipient_after_signing_breaks_auth() {
 }
 
 #[test]
-fn forward_dynamic_binds_every_other_projected_value() {
+fn forward_dynamic_binds_every_other_signed_argument() {
     let w = setup();
     let e = &w.e;
     let args = w.probe_args(1);

@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -18,6 +19,6 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --all -- --check
-      # Native tests need no built WASM: the router suite loads the committed
-      # market-router/testdata/market.wasm.
+      # Native tests need no built WASM: the only WASMs they load are the
+      # committed testdata in market-router/testdata/ and session-policy/testdata/.
       - run: cargo test --locked --workspace

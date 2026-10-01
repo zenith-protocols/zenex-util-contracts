@@ -158,8 +158,8 @@ impl FeeForwarderContract {
 /// - Refer to [`collect_fee`] errors.
 ///
 /// # Events
-/// - [`FeeCollected`](stellar_fee_abstraction::FeeCollected) and
-///   [`ForwardExecuted`](stellar_fee_abstraction::ForwardExecuted).
+/// - [`FeeCollected`](stellar_fee_abstraction::FeeCollected), from
+///   `collect_fee`; the forwarder emits nothing else.
 fn collect_and_invoke(
     e: &Env,
     fee_token: &Address,

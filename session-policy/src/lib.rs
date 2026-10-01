@@ -21,9 +21,10 @@ use stellar_accounts::{
 // Storage
 // ==========================================
 
-// The configuration sits in instance storage, one entry per value, so each
-// `enforce` branch reads only the values it checks. The keys are short
-// symbols, which are constants: building one costs no host call.
+// The configuration sits in instance storage, one entry per value: the
+// forwarder branch reads only the forwarder and the recipient, and every other
+// context reads the market list once. The keys are short symbols, which are
+// constants: building one costs no host call.
 
 /// The fee forwarder the key's relayed trades go through: an `Address`.
 pub(crate) const FORWARDER: Symbol = symbol_short!("forwarder");
@@ -118,7 +119,9 @@ impl Policy for SessionPolicyContract {
             panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
         };
 
-        // The first matching branch decides; each reads only what it checks.
+        // The first matching branch decides. The forwarder branch reads only the
+        // forwarder and the recipient; every other context reads the market
+        // list once.
         let instance = e.storage().instance();
         let forwarder: Address = instance.get(&FORWARDER).unwrap_optimized();
         if contract == forwarder {

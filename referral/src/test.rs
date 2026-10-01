@@ -2,7 +2,7 @@ extern crate std;
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, Events},
-    Address, Env, IntoVal, Symbol,
+    Address, Env, Event as _, IntoVal, Symbol,
 };
 
 #[test]
@@ -68,26 +68,15 @@ fn attribute_emits_event_with_indexable_topics() {
     let referrer = Address::generate(&env);
     client.attribute(&caller, &referrer);
 
-    // ContractEvents.events() returns &[xdr::ContractEvent]. filter_by_contract
-    // narrows to events emitted by us specifically.
-    let our_events = env.events().all().filter_by_contract(&contract_id);
+    let expected = Attributed {
+        referee: caller.clone(),
+        referrer: referrer.clone(),
+    }
+    .to_xdr(&env, &contract_id);
     assert_eq!(
-        our_events.events().len(),
-        1,
-        "exactly one event should be emitted by the contract"
-    );
-
-    // Topics produced by #[contractevent] macro on the `Attributed` struct:
-    //   [0] event name symbol (auto-derived from struct name)
-    //   [1] referee  (the #[topic] field)
-    //   [2] referrer (the #[topic] field)
-    let topics = match &our_events.events()[0].body {
-        soroban_sdk::xdr::ContractEventBody::V0(v0) => &v0.topics,
-    };
-    assert_eq!(
-        topics.len(),
-        3,
-        "expected 3 topics: (event_name, referee, referrer)"
+        env.events().all().filter_by_contract(&contract_id),
+        [expected],
+        "exactly one event, topics (\"attributed\", caller, referrer)"
     );
 }
 
