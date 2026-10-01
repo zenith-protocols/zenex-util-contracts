@@ -9,7 +9,7 @@ mod test;
 use soroban_sdk::{
     auth::{Context, ContractContext},
     contract, contracterror, contractimpl, panic_with_error, symbol_short, Address, Env, Symbol,
-    TryFromVal, Val, Vec,
+    TryFromVal, Vec,
 };
 use stellar_accounts::{
     policies::Policy,
@@ -130,9 +130,10 @@ impl Policy for SessionPolicyContract {
             panic_with_error!(e, SessionPolicyError::ContractNotAllowed);
         };
 
-        // The constructor makes every configured address distinct, so at
-        // most one branch matches. Each reads only the values it checks.
-        let forwarder: Address = read(e, &FORWARDER);
+        // The first matching branch decides. Each reads only the values it
+        // checks.
+        let instance = e.storage().instance();
+        let forwarder: Address = instance.get(&FORWARDER).unwrap();
         if contract == forwarder {
             // The root of a relayed trade; its args are the signed
             // projection. The fee leaves the wallet through the forwarder's
@@ -140,7 +141,10 @@ impl Policy for SessionPolicyContract {
             // signed recipient is the one thing to pin here. Whatever the
             // forward calls, every call that needs the wallet's
             // authorization is a context of its own.
-            if address_arg(e, &args, PROJECTION_FEE_RECIPIENT) != Some(read(e, &FEE_RECIPIENT)) {
+            let recipient = args
+                .get(PROJECTION_FEE_RECIPIENT)
+                .and_then(|val| Address::try_from_val(e, &val).ok());
+            if recipient != instance.get(&FEE_RECIPIENT) {
                 panic_with_error!(e, SessionPolicyError::ForwardNotAllowed);
             }
             return;
@@ -149,23 +153,29 @@ impl Policy for SessionPolicyContract {
         // A market call that needs the wallet's authorization acts on the
         // wallet's own funds and pays back to the wallet, so any function is
         // allowed.
-        let markets: Vec<Address> = read(e, &MARKETS);
+        let markets: Vec<Address> = instance.get(&MARKETS).unwrap();
         if markets.contains(&contract) {
             return;
         }
 
-        if contract == read::<Address>(e, &TOKEN) {
+        if instance.get(&TOKEN) == Some(contract) {
             if fn_name == symbol_short!("transfer") {
                 // `transfer(from, to, amount)`: only escrow into a market. A
                 // muxed `to` does not decode as an address, so it fails here
                 // too.
-                if !address_arg(e, &args, 1).is_some_and(|to| markets.contains(&to)) {
+                let to = args
+                    .get(1)
+                    .and_then(|val| Address::try_from_val(e, &val).ok());
+                if !to.is_some_and(|to| markets.contains(&to)) {
                     panic_with_error!(e, SessionPolicyError::TransferNotAllowed);
                 }
             } else if fn_name == symbol_short!("approve") {
                 // `approve(from, spender, amount, expiration_ledger)`: only the
                 // forwarder's fee allowance, at any amount.
-                if address_arg(e, &args, 1) != Some(forwarder) {
+                let spender = args
+                    .get(1)
+                    .and_then(|val| Address::try_from_val(e, &val).ok());
+                if spender != Some(forwarder) {
                     panic_with_error!(e, SessionPolicyError::ApproveNotAllowed);
                 }
             } else {
@@ -190,21 +200,4 @@ impl Policy for SessionPolicyContract {
     fn uninstall(_e: &Env, _context_rule: ContextRule, smart_account: Address) {
         smart_account.require_auth();
     }
-}
-
-// ==========================================
-// Helpers
-// ==========================================
-
-/// Reads the configured value under `key`. The constructor sets every key,
-/// so a deployed policy never misses one.
-fn read<V: TryFromVal<Env, Val>>(e: &Env, key: &Symbol) -> V {
-    e.storage().instance().get(key).unwrap()
-}
-
-/// Decodes `args[index]` as a plain address. A missing argument, a muxed
-/// address or any other value is `None`.
-fn address_arg(e: &Env, args: &Vec<Val>, index: u32) -> Option<Address> {
-    args.get(index)
-        .and_then(|val| Address::try_from_val(e, &val).ok())
 }
