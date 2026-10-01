@@ -16,8 +16,8 @@ The market router is ported here from zenex-contracts without its fee functions.
 | `referral` | Referral attestation: a wallet attests which wallet referred it |
 | `session-policy` | Smart-account policy for trading session keys: market calls, token escrow into markets, and relay fees only through the fee forwarder to a pinned recipient |
 
-The testnet deployments (see Deployment) are built from this source, including the session policy's
-signer check.
+The testnet deployments (see Deployment) match this source, including the session policy's signer
+check.
 It needs review before any mainnet deploy. The workspace depends on OpenZeppelin stellar-contracts at
 an UNRELEASED, UNAUDITED commit (`df602b6`, the head of their `v0.9.0` branch) and builds with
 soroban-sdk 27.0.6; see the fee forwarder below. The older testnet address below runs v1, whose
@@ -258,14 +258,15 @@ this workspace yet.
 
 | Contract | Testnet address | Deployed wasm sha256 |
 |---|---|---|
-| market-router | CADNB773DWGI2KZMY7D7XL4PHOR7ICU45YPTOL4JJLXDUYYYTIO6V5QT | e8ab1b890ea258c010604ad8626a1529125018a863003fc2979c7bf0277e2825 |
-| session-policy | CAX22IBJ33YLHCKNMJZ2B5HV3QVG6XH3U5Z66BUSAHY6ALIP72QBWEJK | 49f3d545d3eba03265183b16c7de432d3b1db8d9460c3af94b44ef8a215940a6 |
+| market-router | CC56K5I2HIPN5JWLM55V3YJ3QW64JQNU6MS5C4SS4A2VGZ6BKWXAUUIJ | 9307152cf59f6127291acb1b6daab19fd86e583f3e0b4afe463905ae2be2ce2e |
+| session-policy | CAZZBLWKCYO7PR4R74UOPEKQO2MH43FKL6ZXS3V5Z5XUPBRRITGHJDQ6 | 780c2004795aef410797d72696b270310b87ad0e0d5af3e5277554d5f40813a4 |
 | session-policy (v1) | CDUUHEXJY3EMQPGGRQS2KVJN7J3RM5HM2QWVUA5AGE3BRUOYW2MZPUAT | a98d1317f918b03af4e23f407eb99711eabda9c64629ae413427e7fa1c4f2135 |
 | referral | CAVUAS7CMIXOUXFND77EDNB5OOWBAM4AOAGV4NF6D4JQXAZAAERQDJQQ | 2d459a2180d91b5006ac0154cd97c4f4505165b39971ace0e534c3e549c5dc9d |
 | fee-forwarder | CDUDWXU3UBMW6NDXYJGLBOSJMAQE4ESVR2UF64SUJ45NOO6CAOQSQEMY | 2e333ddb9da76d1fd3d19390bf03d2c17a9ce629b0537299d05497ceee347b26 |
 
-The market-router, session-policy and fee-forwarder rows are built from commit bfe0b72
-(soroban-sdk 27.0.6, OpenZeppelin `df602b6`) and match this source. The session policy is deployed
+The market-router and session-policy rows are built from commit 71884c2 and the fee-forwarder row
+from bfe0b72, which builds the same fee-forwarder WASM; all three match this source (soroban-sdk
+27.0.6, OpenZeppelin `df602b6`). The session policy is deployed
 with the forwarder `CDUDWXU3…QEMY`, the market `CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee
 recipient `GBIBH5UV…MIKE4`.
 
@@ -277,29 +278,31 @@ canonical wasm with an ed25519 signer on rule 0; the session key runs under the 
 
 | Signer | Flow | Transaction |
 |---|---|---|
-| G-account | open: `forward_dynamic` → `create_and_fill` | 328135e3db63e28fe7a3e60960fe51019b137729971dfc02413ef447675b7b0f |
-| Smart account | open: `forward_dynamic` → `create_and_fill` | 6d7dd5aa1dbaa2202eb523e8c3db513162e903d850c1069ebe63eb108acad00f |
-| G-account | limit: `forward` → `multicall` | 94e91a644b7d5d39864123dec4449f2425f85135b643804aee493855afac08ea |
-| G-account | cancel: `forward` → `multicall` | 74671ba7fd4696127534692d5b195917facdc62692bed8d4cc08e2d417a29ec4 |
-| Smart account | limit: `forward` → `multicall` | 06f23bd6f5af157f793ffe9f7a44b9944150c780307244673c50ec2addeb6126 |
-| Smart account | cancel: `forward` → `multicall` | fda7a13029ff36b39b31a255f281758ec3d1966648e1599f799a7a014bf677a3 |
-| G-account | close: `forward_dynamic` → `create_and_try_fill` | 75258c467ff3e3a143f2b15e2f2d7f677ba20573af75d46ed221ddf2a1f5d76f |
-| Smart account | close: `forward_dynamic` → `create_and_try_fill` | f96f02a4265a8b3a61ff270a247cbfbbcf2c56b648f5ab56639f35b5789cdb5b |
-| Rule 0 installs the session policy | enable: `forward` → `multicall(add_context_rule)` | cd9fe427399ded13018ae251bb7a1742f313fbbabcfd5511a08f901a7b8c02c8 |
-| Session key | open: `forward_dynamic` → `create_and_fill` | cbecc0eb956b0c60a2e8eb5e3aaf4d717a72f3efe06fde5dc8bdf1119557d850 |
-| Session key | limit: `forward` → `multicall` | 7b1a7419121cf8a515ddbd56de5056c25018afbd964ec90bebb912232f6361f2 |
-| Session key | cancel: `forward` → `multicall` | b2eeec94e1ba130646bd48bf99507097e4988b97d6dfe32d3c7cea04b430a094 |
-| Session key | close: `forward_dynamic` → `create_and_try_fill` | 8e06adb771f0a17053269a509cb5c2c7401c586f216912d38a3b3e4d46105290 |
-| Rule 0 removes the session rule | disable: `forward` → `multicall(remove_context_rule)` | 8eb0345abb74bafed122bab60eae567a986b1df76b2d30fe0444b80f15498da5 |
+| G-account | open: `forward_dynamic` → `create_and_fill` | 004305ce7ab98907fbb36022160921f0dbe5cef23ed73f5e08019831dedd6cca |
+| Smart account | open: `forward_dynamic` → `create_and_fill` | 4df55f075740d3fced851bc866782d3d94144875554d02e8473278a0ab9b93d7 |
+| G-account | limit: `forward` → `multicall` | eda22ca296c975297d3e937d5d9ae0e74a70d9cdc6578ede13082eda12559f79 |
+| G-account | cancel: `forward` → `multicall` | dc7e8273377f24949368e8c5637dab6b31cd090d9b16ad17872f8ce1d12bef61 |
+| Smart account | limit: `forward` → `multicall` | 424c1692e51c72d071cc0539b74d4c1d4f85349ce38e70adb49823c8c3894dbd |
+| Smart account | cancel: `forward` → `multicall` | 0026df3ca35e995d86191575bd67a4845cb88c65f38540cdac7256879c4bc1ce |
+| G-account | close: `forward_dynamic` → `create_and_try_fill` | 3aa5596602c224f0e19f457d77c8232d8ad92413b89ff62721089acd1df819f5 |
+| Smart account | close: `forward_dynamic` → `create_and_try_fill` | 196ea57273da9d11a14e44675e9d73df80d66a66ecd0c942bab63d1324e4d0f2 |
+| Rule 0 installs the session policy | enable: `forward` → `multicall(add_context_rule)` | 4d2450b94627ec63cb099fc99f419c7b50bf9970f60e90149c00808fe351a571 |
+| Session key | open: `forward_dynamic` → `create_and_fill` | b097b4415bafc7a8e8f1925b3676f2e82205bdfc35faba971023dc933d127ae4 |
+| Session key | limit: `forward` → `multicall` | af1e378edd3b8effc997c24234c5f5b17c02711dd313f2ae5ba78f8d86b70e9f |
+| Session key | cancel: `forward` → `multicall` | 531131d04aa5e37fc83c82006c6e6b609ba6e1213d1a52ab94843b2ed9f4e5ad |
+| Session key | close: `forward_dynamic` → `create_and_try_fill` | 407da70c79fc22e307e267f8a656b069da37a03baf6eb1a89c4113c1a3ddb779 |
+| Rule 0 removes the session rule | disable: `forward` → `multicall(remove_context_rule)` | a49f7f3d60ba225c2208cb11798ec94c01c325e2ee2629cd311979bb164b6f94 |
 
 The relay rejects a submit whose fee recipient changed after prepare (HTTP 400), and a session-signed
 forward paying another recipient fails simulation with `Error(Auth, InvalidAction)` and the policy's
 4006 in the event log.
 
-Superseded testnet deployments: the market router `CAZFL7XZGYND5MLKQB4SCGY7OUAML6Z4DW2CU7BUXNMRWJ4M72C45EAW`
+Superseded testnet deployments: the bfe0b72 market router
+`CADNB773DWGI2KZMY7D7XL4PHOR7ICU45YPTOL4JJLXDUYYYTIO6V5QT` (wasm `e8ab1b89…2825`) and session policy
+`CAX22IBJ33YLHCKNMJZ2B5HV3QVG6XH3U5Z66BUSAHY6ALIP72QBWEJK` (wasm `49f3d545…40a6`, which has the signer
+check); the market router `CAZFL7XZGYND5MLKQB4SCGY7OUAML6Z4DW2CU7BUXNMRWJ4M72C45EAW`
 (wasm `e60009c4…f283`, before the helpers were inlined); the session-policy v4 instance
-`CDUXY6JMMWKDI7WZBBD4ENKKPJZXN7KTUBAWMGNSJPP6O5JEUNXGE4FO` (wasm `bef197d9…4d8c`), which predates the
-signer check and must not be used; the fee forwarder
+`CDUXY6JMMWKDI7WZBBD4ENKKPJZXN7KTUBAWMGNSJPP6O5JEUNXGE4FO` (wasm `bef197d9…4d8c`); the fee forwarder
 `CBWLTLD5JJGAVSR2KH3UY42WXH3YYORZW54TA74EIGOPWA74LJGYE6C2` (wasm `c7dd9bae…d2ba`, `forward_unsafe` and
 the forward event); the v4 instance `CBHJ72ERR2FOSCXIKQ5ZPEZVSJZID7QZAKOTXYNGXUI3EEWRQCRYNCCU` (same wasm),
 pinned to the zenex-contracts router `CAZ4DNYW…REIY4`; the fee forwarder
@@ -309,7 +312,9 @@ upstream Eager collection on soroban-sdk 26) with its v4 instance
 `ed348ebc…6b46`, reset-to-zero collection) with its v4 instance
 `CAIH4U3LUAP2HBHVGLG5F2BPMPOOX2IG56OJMBIDU35MFRUVPNAIGUG4`, and the typed predecessor
 `CDRHA53H3U35NVQ3PHTUONMG7NSQFFRCQL5QBGTFGTZE5I2735KDLOHR` (wasm `6d4c3791…f956`), a fee layer
-fixed to the market router. The session-policy
+fixed to the market router. Every superseded session-policy instance except `CAX22IBJ…` (v1 `CDUUHEXJ…`, `CDUXY6JM…`,
+`CBHJ72ER…`, `CDWY6X5A…` and `CAIH4U3L…`) predates the signer check and accepts an authorization
+with no signature: none of them may be used. The session-policy
 v1 and referral testnet contracts predate this workspace; their sources were imported in commit
 `20719fe`, which is the source of record for them here. This workspace builds with soroban-sdk 27
 and one shared lockfile, so its output does not match those deployed hashes. `attribute` keeps its
