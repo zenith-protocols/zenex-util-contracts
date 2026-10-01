@@ -56,3 +56,12 @@ jobs:
       package: 'referral'
     secrets:
       release_token: ${{ secrets.GITHUB_TOKEN }}
+
+  wallet-factory:
+    uses: stellar-expert/soroban-build-workflow/.github/workflows/release.yml@88068ec50cba931a96436869727ed08edeb76ade # v27.0.0
+    with:
+      release_name: ${{ github.ref_name }}
+      release_description: 'wallet-factory'
+      package: 'wallet-factory'
+    secrets:
+      release_token: ${{ secrets.GITHUB_TOKEN }}

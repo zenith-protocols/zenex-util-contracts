@@ -8,6 +8,7 @@ Soroban contracts used with the Zenex markets.
 | [market-router](market-router/README.md) | Batches calls and runs the create-and-fill flows. |
 | [session-policy](session-policy/README.md) | Smart-account policy that limits a session key to trading. |
 | [referral](referral/README.md) | Records a referral as an event. |
+| [wallet-factory](wallet-factory/README.md) | Deploys smart-account wallets at addresses bound to their signers. |
 
 ## Build
 

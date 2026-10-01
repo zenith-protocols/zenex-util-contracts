@@ -5,6 +5,7 @@ members = [
   "market-router",
   "referral",
   "session-policy",
+  "wallet-factory",
 ]
 
 # Matches the pinned OpenZeppelin commit below: its Cargo.lock resolves
