@@ -6,6 +6,7 @@ use soroban_sdk::{
     vec, Address, Bytes, Env, IntoVal, Symbol, TryFromVal, Val, Vec,
 };
 
+#[allow(clippy::too_many_arguments)]
 mod market_wasm {
     soroban_sdk::contractimport!(file = "testdata/market.wasm");
 }
@@ -146,6 +147,15 @@ fn contract_error(e: &Env, outcome: &Val) -> u32 {
     let error = soroban_sdk::Error::try_from_val(e, outcome).unwrap();
     assert!(error.is_type(soroban_sdk::xdr::ScErrorType::Contract));
     error.get_code()
+}
+
+/// The code of a contract error, or `u32::MAX` for any other failure.
+fn error_code(error: soroban_sdk::Error) -> u32 {
+    if error.is_type(soroban_sdk::xdr::ScErrorType::Contract) {
+        error.get_code()
+    } else {
+        u32::MAX
+    }
 }
 
 /// The last element of a create-and-fill result: the appended fill outcome.
@@ -832,7 +842,7 @@ fn vault_redeem_flow_honors_the_lock_after_the_price_gate() {
 
     let result = market.try_execute_vault_order(&setup.keeper, &setup.user, &id, &Bytes::new(e));
     if let Err(Ok(error)) = result {
-        assert_eq!(crate::error_code(error), VAULT_ORDER_LOCKED);
+        assert_eq!(error_code(error), VAULT_ORDER_LOCKED);
     } else {
         panic!("expected a typed VaultOrderLocked failure");
     }
