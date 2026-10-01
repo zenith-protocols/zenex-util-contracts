@@ -221,68 +221,9 @@ fn test_constructor_stores_one_instance_entry_per_value() {
     }
 }
 
-/// Registers the policy with the given constructor arguments.
-fn register(
-    e: &Env,
-    forwarder: &Address,
-    markets: Vec<Address>,
-    token: &Address,
-    fee_recipient: &Address,
-) {
-    e.register(
-        SessionPolicyContract,
-        (
-            forwarder.clone(),
-            markets,
-            token.clone(),
-            fee_recipient.clone(),
-        ),
-    );
-}
-
 /// Four distinct addresses: forwarder, market, token, recipient.
 fn addresses(e: &Env) -> [Address; 4] {
     core::array::from_fn(|_| Address::generate(e))
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #4001)")]
-fn test_constructor_rejects_empty_markets() {
-    let e = Env::default();
-    let [forwarder, _, token, recipient] = addresses(&e);
-    register(&e, &forwarder, Vec::new(&e), &token, &recipient);
-}
-
-#[test]
-fn test_constructor_rejects_every_overlap() {
-    let e = Env::default();
-    let [forwarder, market, token, recipient] = addresses(&e);
-    let base = [&forwarder, &market, &token, &recipient];
-
-    // Every pair of roles sharing one address is rejected.
-    for i in 0..4 {
-        for j in (i + 1)..4 {
-            let mut roles = base.map(|a| a.clone());
-            roles[j] = roles[i].clone();
-            let [fw, mk, tk, rc] = roles;
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                register(&e, &fw, vec![&e, mk.clone()], &tk, &rc)
-            }));
-            assert!(result.is_err(), "roles {i} and {j} overlap");
-        }
-    }
-
-    // A market listed twice is an overlap too.
-    let twice = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        register(
-            &e,
-            &forwarder,
-            vec![&e, market.clone(), market.clone()],
-            &token,
-            &recipient,
-        )
-    }));
-    assert!(twice.is_err());
 }
 
 // ==========================================

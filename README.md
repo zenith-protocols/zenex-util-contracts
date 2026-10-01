@@ -141,8 +141,8 @@ wallet's signature reaches `enforce` as one context, and those live in three con
 forwarder, the markets and the token.
 
 The constructor takes `(forwarder, markets, token, fee_recipient)` and stores one instance entry
-each (`forwarder`, `markets`, `token`, `recipient`). It rejects empty markets or any repeated address
-(`InvalidConfig` 4001). There is no admin, no per-account state and no getter: a rule installs the
+each (`forwarder`, `markets`, `token`, `recipient`). It does not validate them: a wrong
+configuration is fixed by redeploying. There is no admin, no per-account state and no getter: a rule installs the
 policy with an empty parameter, install stores nothing, and `stellar contract read --id <policy>`
 prints the configuration.
 
@@ -215,7 +215,7 @@ so each contract here takes codes no neighbour uses. The codes that can meet in 
 | 1, 600–900 | zenex-contracts (governance, factory, market, oracle, strategy vault, treasury) |
 | 100–411, 1000–1502, 2000–2203 | OpenZeppelin `stellar-tokens`, `stellar-contract-utils` and `stellar-access`, in zenex-contracts |
 | 3000–3227 | OpenZeppelin `stellar-accounts`: the smart account, its verifiers and policies |
-| 4001–4007 | `session-policy` |
+| 4002–4007 | `session-policy` |
 | 5000–5006 | OpenZeppelin `stellar-fee-abstraction` |
 | 6001–6002 | `fee-forwarder` |
 | 7001 | `referral` |

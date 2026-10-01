@@ -37,8 +37,6 @@ pub(crate) const FEE_RECIPIENT: Symbol = symbol_short!("recipient");
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum SessionPolicyError {
-    // The constructor got empty markets or a repeated address.
-    InvalidConfig = 4001,
     // The context is not a call to an allowed contract.
     ContractNotAllowed = 4002,
     // A token function other than `transfer` or `approve`.
@@ -78,10 +76,6 @@ impl SessionPolicyContract {
     /// Fixes the policy's forwarder, markets, token and fee recipient. There
     /// is no way to change them later: a new configuration is a new
     /// deployment.
-    ///
-    /// # Errors
-    /// - [`SessionPolicyError::InvalidConfig`] if `markets` is empty or any
-    ///   two of the configured addresses are the same.
     pub fn __constructor(
         e: Env,
         forwarder: Address,
@@ -89,20 +83,6 @@ impl SessionPolicyContract {
         token: Address,
         fee_recipient: Address,
     ) {
-        let mut seen: Vec<Address> = Vec::new(&e);
-        for address in [&forwarder, &token, &fee_recipient]
-            .into_iter()
-            .cloned()
-            .chain(markets.iter())
-        {
-            if seen.contains(&address) {
-                panic_with_error!(&e, SessionPolicyError::InvalidConfig);
-            }
-            seen.push_back(address);
-        }
-        if markets.is_empty() {
-            panic_with_error!(&e, SessionPolicyError::InvalidConfig);
-        }
         let instance = e.storage().instance();
         instance.set(&FORWARDER, &forwarder);
         instance.set(&MARKETS, &markets);
@@ -219,10 +199,7 @@ impl Policy for SessionPolicyContract {
 /// Reads the configured value under `key`. The constructor sets every key,
 /// so a deployed policy never misses one.
 fn read<V: TryFromVal<Env, Val>>(e: &Env, key: &Symbol) -> V {
-    e.storage()
-        .instance()
-        .get(key)
-        .unwrap_or_else(|| panic_with_error!(e, SessionPolicyError::InvalidConfig))
+    e.storage().instance().get(key).unwrap()
 }
 
 /// Decodes `args[index]` as a plain address. A missing argument, a muxed
