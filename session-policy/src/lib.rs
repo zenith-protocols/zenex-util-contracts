@@ -144,7 +144,8 @@ impl Policy for SessionPolicyContract {
             let recipient = args
                 .get(PROJECTION_FEE_RECIPIENT)
                 .and_then(|val| Address::try_from_val(e, &val).ok());
-            if recipient != instance.get(&FEE_RECIPIENT) {
+            let fee_recipient: Address = instance.get(&FEE_RECIPIENT).unwrap();
+            if recipient != Some(fee_recipient) {
                 panic_with_error!(e, SessionPolicyError::ForwardNotAllowed);
             }
             return;
@@ -158,7 +159,8 @@ impl Policy for SessionPolicyContract {
             return;
         }
 
-        if instance.get(&TOKEN) == Some(contract) {
+        let token: Address = instance.get(&TOKEN).unwrap();
+        if contract == token {
             if fn_name == symbol_short!("transfer") {
                 // `transfer(from, to, amount)`: only escrow into a market. A
                 // muxed `to` does not decode as an address, so it fails here
