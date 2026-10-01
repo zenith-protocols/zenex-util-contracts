@@ -59,12 +59,6 @@ pub enum SessionPolicyError {
 const EXTEND_AMOUNT: u32 = 30 * 17280; // ~30 days
 const TTL_THRESHOLD: u32 = EXTEND_AMOUNT - 17280; // refresh at ~29 days
 
-/// Where `fee_recipient` sits in the forwarder's signed projection,
-/// `[fee_token, max_fee_amount, expiration_ledger, fee_recipient,
-/// target_contract, target_fn(, target_args)]`, the same in `forward` and
-/// `forward_dynamic`.
-const PROJECTION_FEE_RECIPIENT: u32 = 3;
-
 // ==========================================
 // Contract
 // ==========================================
@@ -128,14 +122,15 @@ impl Policy for SessionPolicyContract {
         let instance = e.storage().instance();
         let forwarder: Address = instance.get(&FORWARDER).unwrap_optimized();
         if contract == forwarder {
-            // The root of a relayed trade; its args are the signed
-            // projection. The fee leaves the wallet through the forwarder's
-            // own `transfer_from`, which never reaches this policy, so the
-            // signed recipient is the one thing to pin here. Whatever the
-            // forward calls, every call that needs the wallet's
+            // The root of a relayed trade. Its args are the signed arguments
+            // `(fee_token, max_fee_amount, expiration_ledger, fee_recipient,
+            // target_contract, target_fn, [target_args])`. The fee leaves the
+            // wallet through the forwarder's own `transfer_from`, which never
+            // reaches this policy, so the signed recipient is the one thing to
+            // pin. Every call the forward makes that needs the wallet's
             // authorization is a context of its own.
             let recipient = args
-                .get(PROJECTION_FEE_RECIPIENT)
+                .get(3)
                 .and_then(|val| Address::try_from_val(e, &val).ok());
             let fee_recipient: Address = instance.get(&FEE_RECIPIENT).unwrap_optimized();
             if recipient != Some(fee_recipient) {

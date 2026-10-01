@@ -251,8 +251,8 @@ impl World {
             .into_val(&self.e)
     }
 
-    /// The projection `forward_dynamic` signs.
-    fn unsafe_projection(&self, target: &Address, target_fn: &str) -> Vec<Val> {
+    /// The arguments `forward_dynamic` signs.
+    fn dynamic_signed_args(&self, target: &Address, target_fn: &str) -> Vec<Val> {
         (
             self.usdc.address.clone(),
             MAX_FEE,
@@ -264,8 +264,8 @@ impl World {
             .into_val(&self.e)
     }
 
-    /// The projection `forward` signs.
-    fn projection(&self, target: &Address, target_fn: &str, target_args: &Vec<Val>) -> Vec<Val> {
+    /// The arguments `forward` signs.
+    fn signed_args(&self, target: &Address, target_fn: &str, target_args: &Vec<Val>) -> Vec<Val> {
         (
             self.usdc.address.clone(),
             MAX_FEE,
@@ -289,15 +289,15 @@ impl World {
     }
 
     /// Mocks exactly the tree the wallet signs when the target needs no
-    /// authorization of its own: the root projection and the fee approve.
-    fn sign(&self, fn_name: &str, projection: Vec<Val>) {
+    /// authorization of its own: the root's signed arguments and the fee approve.
+    fn sign(&self, fn_name: &str, signed_args: Vec<Val>) {
         let approve_max = self.approve_args(MAX_FEE);
         self.e.mock_auths(&[MockAuth {
             address: &self.user,
             invoke: &MockAuthInvoke {
                 contract: &self.forwarder.address,
                 fn_name,
-                args: projection,
+                args: signed_args,
                 sub_invokes: &[MockAuthInvoke {
                     contract: &self.usdc.address,
                     fn_name: "approve",
@@ -379,7 +379,7 @@ fn contract_error(code: u32) -> Error {
 fn forward_collects_the_fee_refunds_the_rest_and_calls_the_target() {
     let w = setup();
     let args = w.probe_args(1);
-    w.sign("forward", w.projection(&w.probe, "probe", &args));
+    w.sign("forward", w.signed_args(&w.probe, "probe", &args));
 
     // The probe reports the allowance it sees while it runs.
     let seen = w.forward_probe("forward", 1, &w.recipient);
@@ -402,7 +402,7 @@ fn forward_collects_the_fee_refunds_the_rest_and_calls_the_target() {
 #[test]
 fn forward_dynamic_collects_the_fee_and_consumes_the_allowance() {
     let w = setup();
-    w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
+    w.sign("forward_dynamic", w.dynamic_signed_args(&w.probe, "probe"));
 
     let seen = w.forward_probe("forward_dynamic", 1, &w.recipient);
 
@@ -573,14 +573,14 @@ fn a_zero_fee_is_rejected() {
 }
 
 // ==========================================
-// The signed projection
+// The signed arguments
 // ==========================================
 
 #[test]
 fn forward_signs_the_target_args() {
     let w = setup();
     let signed = w.probe_args(1);
-    w.sign("forward", w.projection(&w.probe, "probe", &signed));
+    w.sign("forward", w.signed_args(&w.probe, "probe", &signed));
 
     // Different target args no longer match the signature.
     assert_auth_failure(|| {
@@ -588,7 +588,7 @@ fn forward_signs_the_target_args() {
     });
 
     // The signed args still land.
-    w.sign("forward", w.projection(&w.probe, "probe", &signed));
+    w.sign("forward", w.signed_args(&w.probe, "probe", &signed));
     w.forward_probe("forward", 1, &w.recipient);
     assert_eq!(w.last_tag(), 1);
 }
@@ -596,7 +596,7 @@ fn forward_signs_the_target_args() {
 #[test]
 fn forward_dynamic_leaves_the_target_args_to_the_relayer() {
     let w = setup();
-    w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
+    w.sign("forward_dynamic", w.dynamic_signed_args(&w.probe, "probe"));
 
     // The relayer refreshes the args after signing, like a price update.
     w.forward_probe("forward_dynamic", 7, &w.recipient);
@@ -619,7 +619,7 @@ fn forward_dynamic_cannot_change_a_user_authorized_call() {
             invoke: &MockAuthInvoke {
                 contract: &w.forwarder.address,
                 fn_name: "forward_dynamic",
-                args: w.unsafe_projection(&w.probe, "act"),
+                args: w.dynamic_signed_args(&w.probe, "act"),
                 sub_invokes: &[
                     MockAuthInvoke {
                         contract: &w.usdc.address,
@@ -665,18 +665,18 @@ fn changing_the_recipient_after_signing_breaks_auth() {
     let other = Address::generate(&w.e);
     let args = w.probe_args(1);
 
-    w.sign("forward", w.projection(&w.probe, "probe", &args));
+    w.sign("forward", w.signed_args(&w.probe, "probe", &args));
     assert_auth_failure(|| {
         w.forward_probe("forward", 1, &other);
     });
 
-    w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
+    w.sign("forward_dynamic", w.dynamic_signed_args(&w.probe, "probe"));
     assert_auth_failure(|| {
         w.forward_probe("forward_dynamic", 1, &other);
     });
 
     // The signed recipient is paid.
-    w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
+    w.sign("forward_dynamic", w.dynamic_signed_args(&w.probe, "probe"));
     w.forward_probe("forward_dynamic", 1, &w.recipient);
     assert_eq!(w.usdc.balance(&w.recipient), FEE);
     assert_eq!(w.usdc.balance(&other), 0);
@@ -706,7 +706,7 @@ fn forward_dynamic_binds_every_other_projected_value() {
     let other_probe = e.register(MockProbe, ());
 
     for tamper in 0..5 {
-        w.sign("forward_dynamic", w.unsafe_projection(&w.probe, "probe"));
+        w.sign("forward_dynamic", w.dynamic_signed_args(&w.probe, "probe"));
         assert_auth_failure(|| match tamper {
             0 => submit(&other_token, MAX_FEE, EXPIRATION, &w.probe, "probe"),
             1 => submit(&w.usdc.address, MAX_FEE + 1, EXPIRATION, &w.probe, "probe"),
@@ -772,7 +772,7 @@ fn the_recorded_tree_is_the_forwarder_root_without_the_router() {
         function: AuthorizedFunction::Contract((
             w.forwarder.address.clone(),
             Symbol::new(e, "forward_dynamic"),
-            w.unsafe_projection(&router, "create_and_fill"),
+            w.dynamic_signed_args(&router, "create_and_fill"),
         )),
         sub_invocations: std::vec![
             AuthorizedInvocation {

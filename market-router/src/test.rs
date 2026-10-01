@@ -873,7 +873,7 @@ fn fill_target_args(e: &Env, calls: &Vec<Call>, user: &Address, keeper: &Address
 // the batch and fills it on the market. The fee reaches the recipient, the
 // unused cap is refunded, no allowance or balance stays with the forwarder,
 // and the fill matches the fee-free create_and_fill case. The user's signed
-// tree is the forwarder root with its projection, the fee approval, and the
+// tree is the forwarder root with its signed arguments, the fee approval, and the
 // market's create_order with its escrow transfer; the router is not in it.
 #[test]
 fn forward_dynamic_through_router_fills_on_the_market() {

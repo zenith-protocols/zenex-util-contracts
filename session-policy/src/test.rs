@@ -116,10 +116,10 @@ impl Setup<'_> {
         self.call(&self.token, "approve", args)
     }
 
-    /// The signed projection of a forward that pays `fee_token` to
+    /// The signed arguments of a forward that pays `fee_token` to
     /// `recipient` and targets `target.target_fn`. `forward` appends
     /// `target_args`.
-    fn projection(
+    fn signed_args(
         &self,
         fn_name: &str,
         fee_token: &Address,
@@ -146,7 +146,7 @@ impl Setup<'_> {
 
     /// The root context of an honest relayed trade.
     fn forward(&self, fn_name: &str, target_fn: &str) -> Context {
-        let args = self.projection(
+        let args = self.signed_args(
             fn_name,
             &self.token,
             &self.fee_recipient,
@@ -303,7 +303,7 @@ fn test_enforce_allows_any_forward_paying_the_recipient() {
     ];
     for fn_name in ["forward", "forward_dynamic"] {
         for (target, target_fn) in targets {
-            let args = s.projection(fn_name, &s.token, &s.fee_recipient, target, target_fn);
+            let args = s.signed_args(fn_name, &s.token, &s.fee_recipient, target, target_fn);
             s.enforce(&s.call(&s.forwarder, fn_name, args), &rule);
         }
     }
@@ -316,7 +316,7 @@ fn test_enforce_blocks_a_forward_paying_another_recipient() {
     let attacker = Address::generate(&s.e);
 
     for fn_name in ["forward", "forward_dynamic"] {
-        let args = s.projection(fn_name, &s.token, &attacker, &s.router, "create_and_fill");
+        let args = s.signed_args(fn_name, &s.token, &attacker, &s.router, "create_and_fill");
         assert_eq!(
             s.enforce_error(&s.call(&s.forwarder, fn_name, args), &rule),
             4006,
@@ -332,7 +332,7 @@ fn test_enforce_blocks_a_forward_without_a_recipient_address() {
     let e = &s.e;
 
     // A recipient that is not an address, or no recipient at all.
-    let mut bad_recipient = s.projection(
+    let mut bad_recipient = s.signed_args(
         "forward_dynamic",
         &s.token,
         &s.fee_recipient,
@@ -361,7 +361,7 @@ fn test_enforce_blocks_a_fee_in_another_token() {
 
     // The root does not pin the fee token, but a fee in another token needs
     // that token's `approve`, and only the configured token is allowed.
-    let args = s.projection(
+    let args = s.signed_args(
         "forward_dynamic",
         &other_token,
         &s.fee_recipient,

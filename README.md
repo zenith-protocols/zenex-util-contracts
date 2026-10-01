@@ -40,18 +40,18 @@ and then call `target_contract.target_fn(target_args)` and return its result.
 
 - `forward` binds `user` to `(fee_token, max_fee_amount, expiration_ledger, fee_recipient,
   target_contract, target_fn, target_args)` with `require_auth_for_args`.
-- `forward_dynamic` binds the same projection without `target_args`, so the relayer can refresh
+- `forward_dynamic` binds the same arguments without `target_args`, so the relayer can refresh
   them after signing (a fresh price). The target flow must require the user's own authorization on
   every call that moves the user's funds; a Zenex `create_order` does.
 
 `forward_dynamic` was called `forward_unsafe` until it was renamed for how it reads in a signing
-prompt; the signed projection is unchanged. The 2026-09-30 runs below used earlier deployments that
+prompt; the signed arguments are unchanged. The 2026-09-30 runs below used earlier deployments that
 expose `forward_unsafe`; the current testnet deployment (see Deployment) exposes `forward_dynamic`.
 relayer-plugin-zenex PR #25 and zenex-trade PR #79 still use the old name and need the same rename
 when they are next touched.
 
 `fee_amount` is the relayer's, at most the cap and above zero. Unlike OpenZeppelin's example, the
-user signs `fee_recipient` (index 3 of both projections), so a signature pays only the recipient it
+user signs `fee_recipient` (index 3 of the signed arguments of both), so a signature pays only the recipient it
 names; the forwarder itself cannot be the recipient (`InvalidRecipient`, 6002): OpenZeppelin keeps
 such a fee in the contract for a later sweep, and this forwarder has none.
 
@@ -152,7 +152,7 @@ prints the configuration.
   policy. A wallet leaves the signer check of a rule with policies to its policies, so without it an
   authorization with no signature would pass; `session-policy/tests/signers.rs` runs that attack
   against the real canonical wallet and ed25519 verifier WASMs in `session-policy/testdata/`;
-- on the forwarder, the signed `fee_recipient` (index 3 of both projections) is the pinned recipient
+- on the forwarder, the signed `fee_recipient` (index 3 of the signed arguments) is the pinned recipient
   (`ForwardNotAllowed` 4006). The fee leaves through the forwarder's own `transfer_from`, which never
   reaches the policy, so that is the one thing to pin; whatever a forward calls, each call that
   needs the wallet is a context of its own;
