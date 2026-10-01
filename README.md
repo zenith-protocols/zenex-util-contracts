@@ -15,8 +15,8 @@ The market router is ported here from zenex-contracts without its fee functions.
 | `referral` | Referral attestation: a wallet attests which wallet referred it |
 | `session-policy` | Smart-account policy for trading session keys: market calls, token escrow into markets, and relay fees only through the fee forwarder to a pinned recipient |
 
-The testnet session-policy instance runs an earlier, stricter build that lacks the signer check and
-so accepts an authorization with no signature (see Session policy and Deployment).
+The testnet deployments (see Deployment) are built from this source, including the session policy's
+signer check.
 It needs review before any mainnet deploy. The workspace depends on OpenZeppelin stellar-contracts at
 an UNRELEASED, UNAUDITED commit (`df602b6`, the head of their `v0.9.0` branch) and builds with
 soroban-sdk 27.0.6; see the fee forwarder below. The older testnet address below runs v1, whose
@@ -45,8 +45,8 @@ and then call `target_contract.target_fn(target_args)` and return its result.
   every call that moves the user's funds; a Zenex `create_order` does.
 
 `forward_dynamic` was called `forward_unsafe` until it was renamed for how it reads in a signing
-prompt; the signed projection is unchanged. The testnet deployments below, and the transactions
-recorded against them, still expose and use `forward_unsafe` until they are redeployed.
+prompt; the signed projection is unchanged. The 2026-09-30 runs below used earlier deployments that
+expose `forward_unsafe`; the current testnet deployment (see Deployment) exposes `forward_dynamic`.
 relayer-plugin-zenex PR #25 and zenex-trade PR #79 still use the old name and need the same rename
 when they are next touched.
 
@@ -175,8 +175,7 @@ relay fees only to the pinned recipient. It cannot withdraw, move other tokens o
 Markets are upgradeable through governance, so a future market function that asks for the wallet's
 authorization is allowed automatically.
 
-The deployed testnet session policy below predates these rules: it still pins the router and the
-market functions, and it lacks the signer check until it is redeployed.
+The testnet session policy (see Deployment) is built from this source.
 
 ## Getting Started
 
@@ -256,22 +255,50 @@ this workspace yet.
 
 | Contract | Testnet address | Deployed wasm sha256 |
 |---|---|---|
-| market-router | CAZFL7XZGYND5MLKQB4SCGY7OUAML6Z4DW2CU7BUXNMRWJ4M72C45EAW | e60009c4c26f784fa878a55031aeb857e5edfb70a61347e037019b6ab946f283 |
-| session-policy (v4) | CDUXY6JMMWKDI7WZBBD4ENKKPJZXN7KTUBAWMGNSJPP6O5JEUNXGE4FO | bef197d9c1df2e4d03bfee2621a853d5d10c32be92ccd57fea47ba226ae34d8c |
+| market-router | CADNB773DWGI2KZMY7D7XL4PHOR7ICU45YPTOL4JJLXDUYYYTIO6V5QT | e8ab1b890ea258c010604ad8626a1529125018a863003fc2979c7bf0277e2825 |
+| session-policy | CAX22IBJ33YLHCKNMJZ2B5HV3QVG6XH3U5Z66BUSAHY6ALIP72QBWEJK | 49f3d545d3eba03265183b16c7de432d3b1db8d9460c3af94b44ef8a215940a6 |
 | session-policy (v1) | CDUUHEXJY3EMQPGGRQS2KVJN7J3RM5HM2QWVUA5AGE3BRUOYW2MZPUAT | a98d1317f918b03af4e23f407eb99711eabda9c64629ae413427e7fa1c4f2135 |
 | referral | CAVUAS7CMIXOUXFND77EDNB5OOWBAM4AOAGV4NF6D4JQXAZAAERQDJQQ | 2d459a2180d91b5006ac0154cd97c4f4505165b39971ace0e534c3e549c5dc9d |
-| fee-forwarder | CBWLTLD5JJGAVSR2KH3UY42WXH3YYORZW54TA74EIGOPWA74LJGYE6C2 | c7dd9bae43bea382e4890a86c9d41153607fe9ac465a207dccfd2d0b66c0d2ba |
+| fee-forwarder | CDUDWXU3UBMW6NDXYJGLBOSJMAQE4ESVR2UF64SUJ45NOO6CAOQSQEMY | 2e333ddb9da76d1fd3d19390bf03d2c17a9ce629b0537299d05497ceee347b26 |
 
-The session-policy v4 row and the fee forwarder are built from this workspace on OpenZeppelin
-`df602b6` and soroban-sdk 27.0.6 (commit 1b037f0), the market router from commit f2bd687. The
-session-policy source has since moved its configuration to per-value instance keys, dropped
-`get_config`, added the signer check, dropped the router from its constructor and reduced its rules
-to the authorization surface (recipient pin, token rules, any market function), and the fee
-forwarder source renamed `forward_unsafe` to
-`forward_dynamic` and shortened a doc, so neither builds its deployed WASM any more. The deployed v4
-lacks the signer check: redeploy it before relying on it. v4 is deployed with the forwarder `CBWLTLD5…E6C2`, the ported router `CAZFL7XZ…5EAW`, the market
-`CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee recipient `GBIBH5UV…MIKE4`. Superseded testnet
-deployments: the v4 instance `CBHJ72ERR2FOSCXIKQ5ZPEZVSJZID7QZAKOTXYNGXUI3EEWRQCRYNCCU` (same wasm),
+The market-router, session-policy and fee-forwarder rows are built from commit bfe0b72
+(soroban-sdk 27.0.6, OpenZeppelin `df602b6`) and match this source. The session policy is deployed
+with the forwarder `CDUDWXU3…QEMY`, the market `CCOIDO46…2F6U`, USDC `CD4MP2QV…V5S2O` and the fee
+recipient `GBIBH5UV…MIKE4`.
+
+Testnet run on 2026-10-01 of those three through the relay stack (backend, OZ relayer, zenex plugin
+in forwarder mode), with real signatures. Every trade went through this forwarder and router, paid
+its fee to `GBIBH5UV…`, refunded the rest of the 1 USDC cap, left the allowance and the forwarder's
+balance at zero, and the forwarder emitted only `fee_collected`. The smart account is the deployed
+canonical wasm with an ed25519 signer on rule 0; the session key runs under the policy above:
+
+| Signer | Flow | Transaction |
+|---|---|---|
+| G-account | open: `forward_dynamic` → `create_and_fill` | 328135e3db63e28fe7a3e60960fe51019b137729971dfc02413ef447675b7b0f |
+| Smart account | open: `forward_dynamic` → `create_and_fill` | 6d7dd5aa1dbaa2202eb523e8c3db513162e903d850c1069ebe63eb108acad00f |
+| G-account | limit: `forward` → `multicall` | 94e91a644b7d5d39864123dec4449f2425f85135b643804aee493855afac08ea |
+| G-account | cancel: `forward` → `multicall` | 74671ba7fd4696127534692d5b195917facdc62692bed8d4cc08e2d417a29ec4 |
+| Smart account | limit: `forward` → `multicall` | 06f23bd6f5af157f793ffe9f7a44b9944150c780307244673c50ec2addeb6126 |
+| Smart account | cancel: `forward` → `multicall` | fda7a13029ff36b39b31a255f281758ec3d1966648e1599f799a7a014bf677a3 |
+| G-account | close: `forward_dynamic` → `create_and_try_fill` | 75258c467ff3e3a143f2b15e2f2d7f677ba20573af75d46ed221ddf2a1f5d76f |
+| Smart account | close: `forward_dynamic` → `create_and_try_fill` | f96f02a4265a8b3a61ff270a247cbfbbcf2c56b648f5ab56639f35b5789cdb5b |
+| Rule 0 installs the session policy | enable: `forward` → `multicall(add_context_rule)` | cd9fe427399ded13018ae251bb7a1742f313fbbabcfd5511a08f901a7b8c02c8 |
+| Session key | open: `forward_dynamic` → `create_and_fill` | cbecc0eb956b0c60a2e8eb5e3aaf4d717a72f3efe06fde5dc8bdf1119557d850 |
+| Session key | limit: `forward` → `multicall` | 7b1a7419121cf8a515ddbd56de5056c25018afbd964ec90bebb912232f6361f2 |
+| Session key | cancel: `forward` → `multicall` | b2eeec94e1ba130646bd48bf99507097e4988b97d6dfe32d3c7cea04b430a094 |
+| Session key | close: `forward_dynamic` → `create_and_try_fill` | 8e06adb771f0a17053269a509cb5c2c7401c586f216912d38a3b3e4d46105290 |
+| Rule 0 removes the session rule | disable: `forward` → `multicall(remove_context_rule)` | 8eb0345abb74bafed122bab60eae567a986b1df76b2d30fe0444b80f15498da5 |
+
+The relay rejects a submit whose fee recipient changed after prepare (HTTP 400), and a session-signed
+forward paying another recipient fails simulation with `Error(Auth, InvalidAction)` and the policy's
+4006 in the event log.
+
+Superseded testnet deployments: the market router `CAZFL7XZGYND5MLKQB4SCGY7OUAML6Z4DW2CU7BUXNMRWJ4M72C45EAW`
+(wasm `e60009c4…f283`, before the helpers were inlined); the session-policy v4 instance
+`CDUXY6JMMWKDI7WZBBD4ENKKPJZXN7KTUBAWMGNSJPP6O5JEUNXGE4FO` (wasm `bef197d9…4d8c`), which predates the
+signer check and must not be used; the fee forwarder
+`CBWLTLD5JJGAVSR2KH3UY42WXH3YYORZW54TA74EIGOPWA74LJGYE6C2` (wasm `c7dd9bae…d2ba`, `forward_unsafe` and
+the forward event); the v4 instance `CBHJ72ERR2FOSCXIKQ5ZPEZVSJZID7QZAKOTXYNGXUI3EEWRQCRYNCCU` (same wasm),
 pinned to the zenex-contracts router `CAZ4DNYW…REIY4`; the fee forwarder
 `CBR2C7SAO5KRKVHAGVW7X3KPAPEMX3A6G72BH4WX762IZRU6L4JYZR25` (wasm `3fee58c2…0940`, a copy of the
 upstream Eager collection on soroban-sdk 26) with its v4 instance
